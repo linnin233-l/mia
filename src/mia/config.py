@@ -73,6 +73,11 @@ class AgentConfig(BaseSettings):
     # 工作目录 (工具执行沙箱)
     workspace_dir: str = str(_project_root / "workspace")
 
+    # MemoryAgent 记忆管理
+    memory_history_turns: int = 5         # 对话历史保留轮数
+    memory_max_working_entries: int = 30  # 临时记忆上限（触发强制合并）
+    memory_extraction_timeout: float = 8.0  # 知识提取超时秒数
+
     model_config = {"env_prefix": "MIA_"}
 
 

@@ -244,13 +244,18 @@ async def run_cli_query(
 
 
 async def _handle_compact(memory_agent: MemoryAgent) -> None:
-    """处理 /compact 命令 — 压缩跨对话历史"""
-    if memory_agent.store.count == 0:
+    """处理 /compact 命令 — 压缩跨对话历史 (临时记忆 + 持久知识)"""
+    # 检查临时记忆 + 持久知识 (临时记忆在 working_memory 中，不在 store)
+    has_working = (
+        len(memory_agent._working_memory) > 0
+        or len(memory_agent._daily_buffer) > 0
+    )
+    if memory_agent.store.count == 0 and not has_working:
         print("  \033[90m对话历史为空，无需压缩。\033[0m")
         print()
         return
 
-    memory_count = memory_agent.store.count
+    memory_count = memory_agent.store.count + len(memory_agent._working_memory)
     print(f"  \033[90m正在压缩对话历史 ({memory_count} 条记录)...\033[0m")
     try:
         summary = await memory_agent.compact()

@@ -101,12 +101,29 @@ class MemoryBrowser:
     # ═══════════════════════════════════════════════════════
 
     async def _browse_tui(self) -> None:
-        """TUI 模式: 日期列表 → 条目列表 → 详情 (循环)"""
+        """TUI 模式: 临时记忆 → 日期列表 → 条目列表 → 详情 (循环)
+
+        先打印临时记忆列表，再进入持久知识的日期选择。
+        """
         import questionary
 
+        # ─── 1. 展示临时记忆 (如有) ─────────────────
+        if self.working_entries:
+            print(f"  \033[33m临时记忆\033[0m ({len(self.working_entries)}条) \033[90m— 待持久化，低置信度\033[0m")
+            for i, entry in enumerate(self.working_entries):
+                cat_label = entry.category_label
+                preview = entry.content.replace("\n", " ")[:70]
+                if len(entry.content) > 70:
+                    preview += "..."
+                conf_str = f"\033[90m({entry.confidence:.1f})\033[0m"
+                tag = " \033[93m[临时]\033[0m" if entry.confidence <= 0.5 else ""
+                print(f"    \033[90m[{i+1}]\033[0m {cat_label} {preview} {conf_str}{tag}")
+            print()
+
+        # ─── 2. 持久知识 TUI 导航 ────────────────────
         index = self.store.get_index_summaries()
         if not index:
-            print("  \033[90m知识库为空。\033[0m")
+            print("  \033[90m持久知识为空。\033[0m")
             return
 
         # 只有 1 天: 跳过日期选择，直接进条目列表

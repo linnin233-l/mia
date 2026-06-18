@@ -228,11 +228,31 @@ class MemoryRetriever:
 
     @staticmethod
     def _simple_tokenize(text: str) -> list[str]:
-        """简单中文分词 — 降级方案"""
+        """简单中文分词 — 降级方案，使用字符二元组 + ASCII 单词
+
+        中文使用二元组拆分:
+          "我叫什么" → ["我叫", "叫什", "什么"]
+        英文使用单词提取:
+          "MIA开发" → ["MIA", "我叫", "叫开", "开发"]
+
+        二元组比整句 token 更细粒度，更容易命中子串匹配。
+        """
         import re
-        tokens = re.findall(r'[一-鿿\w]{2,}', text)
+        tokens = []
+        # ASCII 单词 (3+ 字母/数字)
+        ascii_tokens = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]{2,}', text)
+        tokens.extend(ascii_tokens)
+        # 中文字符二元组
+        chinese_chars = re.findall(r'[一-鿿]', text)
+        seen = set()
+        for i in range(len(chinese_chars) - 1):
+            bigram = chinese_chars[i] + chinese_chars[i+1]
+            if bigram not in seen:
+                seen.add(bigram)
+                tokens.append(bigram)
+        # 过滤停用词
         stopwords = {"用户问", "用户说", "请问", "帮我", "我想", "可以", "什么", "怎么", "如何", "这是", "那个", "这个"}
-        return [t for t in tokens if t not in stopwords][:5]
+        return [t for t in tokens if t not in stopwords][:10]
 
     # ─── 关键词匹配 ──────────────────────────────────
 

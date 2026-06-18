@@ -100,7 +100,7 @@ COMPACT_PROMPT = """将以下知识条目压缩为一段简短摘要（200字以
 
 
 class MemoryAgent(BaseAgent):
-    """知识记忆管理 Agent — 两级记忆梯度
+    """知识记忆管理 Agent — 两级记忆梯度 + 对话历史
 
     Level 1 - 临时记忆 (Working Memory):
       - 每轮对话后实时提取 1-3 条原子知识
@@ -112,12 +112,18 @@ class MemoryAgent(BaseAgent):
       - LLM 合并去重 Level 1 的临时知识
       - 持久化到 MemoryStore 磁盘
       - confidence >= 0.7 (持久)
+
+    Conversation History:
+      - 每次 CONVERSATION_DONE 后追加 user+assistant 到缓冲
+      - 每次 USER_INTENT 时注入最近 N 轮对话历史到 memory_context
+      - 默认 5 轮，通过 MIA_MEMORY_HISTORY_TURNS 环境变量配置
     """
 
     MAX_RETRIEVED = 5           # 最多注入 5 条相关记忆
     MAX_WORKING_ENTRIES = 30    # 临时记忆上限 (触发强制合并)
     EXTRACTION_TIMEOUT = 8.0    # 临时提取超时秒数
     CONSOLIDATION_TIMEOUT = 30.0  # 合并去重超时秒数
+    DEFAULT_HISTORY_TURNS = 5   # 默认对话历史保留轮数
 
     def __init__(
         self,
@@ -146,6 +152,14 @@ class MemoryAgent(BaseAgent):
         self.fallback_model = fallback_model
         self.enable_auto_store = enable_auto_store
 
+        # ─── 读取配置 ────────────────────────────
+        try:
+            from mia.config import get_config
+            config = get_config()
+            self.max_history_turns: int = config.agent.memory_history_turns
+        except Exception:
+            self.max_history_turns: int = self.DEFAULT_HISTORY_TURNS
+
         # 持久存储 (Level 2)
         self.store = store or MemoryStore()
 
@@ -158,6 +172,9 @@ class MemoryAgent(BaseAgent):
 
         # ─── Level 1: 临时记忆 (内存) ──────────────
         self._working_memory: list[KnowledgeEntry] = []
+
+        # ─── 对话历史缓冲 (用于 Scheduler 上下文注入) ──
+        self._conversation_history: list[dict] = []
 
         # ─── 原始对话缓冲 (用于合并时 LLM 有完整上下文) ──
         self._daily_buffer: list[dict] = []
@@ -177,9 +194,12 @@ class MemoryAgent(BaseAgent):
         self.store.load()
         self._current_date = _today_str()
         logger.info(
-            "[MemoryAgent] 已就绪, 持久知识: {} 条, 临时记忆: {} 条, provider={}",
+            "[MemoryAgent] 已就绪, 持久知识: {} 条, 临时记忆: {} 条, "
+            "对话历史: {} 轮, 历史上限: {} 轮, provider={}",
             self.store.count,
             len(self._working_memory),
+            len(self._conversation_history),
+            self.max_history_turns,
             self.provider.__class__.__name__,
         )
 
@@ -195,7 +215,13 @@ class MemoryAgent(BaseAgent):
     # ─── USER_INTENT 处理 ────────────────────────────
 
     async def _on_user_intent(self, msg: Message) -> None:
-        """处理用户意图 — 检索记忆 (working + persistent) → 注入上下文 → 转发
+        """处理用户意图 — 对话历史 + 知识检索 → 注入 Scheduler 上下文 → 转发
+
+        构造 memory_context 包含两部分:
+          1. 对话历史 (最近 N 轮 user+assistant 原文)
+          2. 知识记忆 (working + persistent 检索结果)
+
+        这样 Scheduler LLM 既有历史对话的完整上下文，又有提炼后的知识点。
 
         Args:
             msg: USER_INTENT 消息
@@ -219,10 +245,17 @@ class MemoryAgent(BaseAgent):
             await self._consolidate_daily()
             self._current_date = today
 
-        # ─── 检索相关记忆 (working + persistent 合并) ──
-        memory_context = ""
-        total_available = self.store.count + len(self._working_memory)
+        # ─── 构造完整记忆上下文 ──────────────────
+        context_parts: list[str] = []
 
+        # Part 1: 对话历史 (最近 N 轮 user+assistant 原文)
+        history_text = self._build_history_context()
+        if history_text:
+            context_parts.append(history_text)
+
+        # Part 2: 知识记忆检索 (working + persistent 合并)
+        knowledge_text = ""
+        total_available = self.store.count + len(self._working_memory)
         if total_available > 0:
             try:
                 retrieved = await self._retrieve_merged(
@@ -230,26 +263,36 @@ class MemoryAgent(BaseAgent):
                     top_k=self.MAX_RETRIEVED,
                 )
                 if retrieved:
-                    memory_context = await self.retriever.summarize_for_context(
+                    knowledge_text = await self.retriever.summarize_for_context(
                         intent=intent,
                         retrieved=retrieved,
                     )
             except Exception as e:
                 logger.warning("[MemoryAgent] 记忆检索失败: {}", e)
-                # 降级: 用最近 3 条
                 recent = self._get_recent_merged(3)
                 if recent:
-                    memory_context = self.retriever._simple_summary(recent)
+                    knowledge_text = self.retriever._simple_summary(recent)
+
+        if knowledge_text:
+            context_parts.append(knowledge_text)
+
+        # 合并为完整的 memory_context
+        memory_context = "\n\n".join(context_parts)
 
         # ─── 结构化展示 ────────────────────────────
         print(f"\033[34m[MemoryAgent]\033[0m 检索记忆")
         print(f"   \033[90m├─\033[0m 意图: {intent[:80]}")
+        print(f"   \033[90m├─\033[0m 对话历史: {len(self._conversation_history)} 轮可用, 注入最近 {min(len(self._conversation_history), self.max_history_turns)} 轮")
         print(f"   \033[90m├─\033[0m 持久知识: {self.store.count} 条")
         print(f"   \033[90m├─\033[0m 临时记忆: {len(self._working_memory)} 条")
-        if memory_context:
-            print(f"   \033[90m└─\033[0m 注入上下文: {memory_context[:100]}...")
+        if knowledge_text:
+            print(f"   \033[90m├─\033[0m 知识注入: {knowledge_text[:80]}...")
         else:
-            print(f"   \033[90m└─\033[0m 无相关记忆")
+            print(f"   \033[90m├─\033[0m 无相关知识")
+        if history_text:
+            print(f"   \033[90m└─\033[0m 历史注入: 最近 {min(len(self._conversation_history), self.max_history_turns)} 轮对话")
+        else:
+            print(f"   \033[90m└─\033[0m 无对话历史")
         print()
 
         # ─── 构造转发消息 ─────────────────────────
@@ -269,6 +312,33 @@ class MemoryAgent(BaseAgent):
             "[MemoryAgent] USER_INTENT 已转发 to scheduler, memory_context_len={}",
             len(memory_context),
         )
+
+    # ─── 构造对话历史上下文 ────────────────────────
+
+    def _build_history_context(self) -> str:
+        """从 _conversation_history 构造 Scheduler LLM 对话历史上下文
+
+        注入最近 max_history_turns 轮 user+assistant 原文，
+        让 LLM 理解当前对话的上下文和指代关系。
+
+        Returns:
+            格式化的对话历史文本，无历史时返回空字符串
+        """
+        if not self._conversation_history:
+            return ""
+
+        recent = self._conversation_history[-self.max_history_turns:]
+        lines = ["## 对话历史"]
+        for i, turn in enumerate(recent):
+            user_text = turn.get("user", "")[:200]
+            assistant_text = turn.get("assistant", "")[:200]
+            lines.append(f"用户: {user_text}")
+            lines.append(f"助手: {assistant_text}")
+            # 轮次之间加空行
+            if i < len(recent) - 1:
+                lines.append("")
+
+        return "\n".join(lines)
 
     # ─── CONVERSATION_DONE 处理 ──────────────────────
 
@@ -294,6 +364,16 @@ class MemoryAgent(BaseAgent):
             "session_id": session_id,
             "timestamp": _now_beijing(),
         })
+
+        # ─── 1.5. 追加到对话历史 (用于 Scheduler 上下文注入) ──
+        self._conversation_history.append({
+            "user": self._pending_original or self._pending_intent,
+            "assistant": reply,
+            "session_id": session_id,
+        })
+        # 限制对话历史长度，防止内存无限增长
+        if len(self._conversation_history) > self.max_history_turns * 2:
+            self._conversation_history = self._conversation_history[-self.max_history_turns:]
 
         # ─── 2. 实时提取临时知识 (Level 1) ─────────
         try:
@@ -460,16 +540,27 @@ class MemoryAgent(BaseAgent):
         if len(source) > 200:
             content += "..."
 
-        # 简单中文分词提取关键词
+        # 简单中文分词 + ASCII 单词提取关键词 (二元组)
         import re
-        raw_tokens = re.findall(r'[一-鿿\w]{2,}', source)
+        tokens = []
+        # ASCII 单词 (3+ 字母/数字)
+        ascii_tokens = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]{2,}', source)
+        tokens.extend(ascii_tokens)
+        # 中文字符二元组 (更细粒度，便于子串匹配)
+        chinese_chars = re.findall(r'[一-鿿]', source)
+        seen = set()
+        for i in range(len(chinese_chars) - 1):
+            bigram = chinese_chars[i] + chinese_chars[i+1]
+            if bigram not in seen:
+                seen.add(bigram)
+                tokens.append(bigram)
         # 过滤停用词
         stopwords = {
             "请问", "帮我", "我想", "可以", "什么", "怎么", "如何",
             "这个", "那个", "这是", "查询", "一下", "用户说",
             "用户问", "一个", "这个", "现在", "还是", "是不是",
         }
-        keywords = [t for t in raw_tokens if t not in stopwords][:5]
+        keywords = [t for t in tokens if t not in stopwords][:5]
 
         logger.debug(
             "[MemoryAgent] 本地提取: content={}, keywords={}",
@@ -661,16 +752,26 @@ class MemoryAgent(BaseAgent):
         # ─── 搜索临时记忆 (Level 1) ──────────────────
         if self._working_memory:
             try:
+                keywords = await self.retriever._extract_keywords(intent)
                 working_results = self.retriever._keyword_match(
-                    keywords=await self.retriever._extract_keywords(intent),
+                    keywords=keywords,
                     entries=self._working_memory,
                 )
+                # 关键词无匹配时回退到最近 top_k 条 (保证临时记忆不丢失)
+                if not working_results:
+                    logger.debug(
+                        "[MemoryAgent] 临时记忆关键词无匹配 (keywords={})，回退到最近 {} 条",
+                        keywords, top_k,
+                    )
+                    working_results = list(self._working_memory[-top_k:])
                 # 临时记忆加分 (时效性)
                 for entry in working_results:
                     entry.importance = min(1.0, entry.importance + 0.1)
                 results.extend(working_results[:top_k])
             except Exception as e:
                 logger.warning("[MemoryAgent] 临时记忆检索失败: {}", e)
+                # 降级: 直接取最近 top_k 条
+                results.extend(list(self._working_memory[-top_k:]))
 
         # ─── 去重 + 排序 ────────────────────────────
         seen_ids = set()
