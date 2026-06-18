@@ -1,0 +1,186 @@
+"""
+ReceiverAgent — 消息接收 Agent
+
+职责:
+  1. 接收 CLI/API 传来的原始用户输入 (RAW_INPUT)
+  2. 检测输入类型 (text / image / voice)
+  3. 调用 MiMo VL/ASR 理解内容
+  4. 产出标准化的 USER_INTENT 发送给 Scheduler
+"""
+
+from pathlib import Path
+from typing import Optional
+
+from loguru import logger
+
+from mia.agents.base import BaseAgent
+from mia.bus.bus import MessageBus
+from mia.bus.message import (
+    Message,
+    MessageType,
+    make_user_intent,
+)
+from mia.providers.mimo import MiMoProvider
+
+
+class ReceiverAgent(BaseAgent):
+    """消息接收 Agent — 理解用户输入并转为标准意图
+
+    支持的输入类型:
+      - text: 纯文本，直接作为意图传递
+      - image: 图片路径，调用 MiMo VL 理解图片内容
+      - voice: 音频路径，调用 MiMo ASR 转文字
+    """
+
+    def __init__(
+        self,
+        bus: MessageBus,
+        mimo: MiMoProvider,
+    ):
+        """
+        Args:
+            bus: 消息总线
+            mimo: MiMo Provider (用于图片理解和语音识别)
+        """
+        super().__init__(name="receiver", bus=bus)
+        self.mimo = mimo
+
+    async def handle(self, msg: Message) -> None:
+        """处理 RAW_INPUT 消息"""
+        if msg.msg_type != MessageType.RAW_INPUT:
+            logger.debug("[Receiver] 忽略消息类型: {}", msg.msg_type)
+            return
+
+        session_id = msg.session_id
+
+        # 分析输入内容
+        text = msg.payload.get("text", "")
+        image_path = msg.payload.get("image")
+        voice_path = msg.payload.get("voice")
+
+        intent_parts: list[str] = []
+        media_refs: list[str] = []
+
+        # ─── 处理文本 ───────────────────────────────
+        if text:
+            intent_parts.append(f"用户说: {text}")
+
+        # ─── 处理图片 ───────────────────────────────
+        if image_path:
+            media_refs.append(image_path)
+            img_desc = await self._understand_image(image_path, text)
+            if img_desc:
+                intent_parts.append(f"图片内容: {img_desc}")
+
+        # ─── 处理语音 ───────────────────────────────
+        if voice_path:
+            media_refs.append(voice_path)
+            voice_text = await self._transcribe_voice(voice_path)
+            if voice_text:
+                intent_parts.append(f"语音内容: {voice_text}")
+
+        # ─── 构建 USER_INTENT ────────────────────────
+        if not intent_parts:
+            intent_parts.append("用户发送了空消息")
+
+        full_intent = "\n".join(intent_parts)
+
+        # 结构化展示
+        print(f"\033[35m[Receiver]\033[0m 理解用户输入")
+        print(f"   \033[90m├─\033[0m 原始输入: {text[:100] if text else '(无文本)'}")
+        if image_path:
+            print(f"   \033[90m├─\033[0m 图片: {image_path}")
+        if voice_path:
+            print(f"   \033[90m├─\033[0m 语音: {voice_path}")
+        print(f"   \033[90m└─\033[0m 意图: {full_intent[:150]}")
+
+        # 发送到 Scheduler
+        intent_msg = make_user_intent(
+            original=text or "",
+            intent=full_intent,
+            media_refs=media_refs,
+            session_id=session_id,
+        )
+        await self.send(intent_msg)
+        logger.info("[Receiver] USER_INTENT 已发送, intent_len={}", len(full_intent))
+
+    # ─── 私有方法 ──────────────────────────────────────
+
+    async def _understand_image(
+        self,
+        image_path: str,
+        context: str = "",
+    ) -> Optional[str]:
+        """
+        调用 MiMo VL 理解图片内容
+
+        Args:
+            image_path: 图片文件路径 或 URL
+            context: 用户同时发送的文本 (可作为理解提示)
+
+        Returns:
+            图片描述文本，失败返回 None
+        """
+        try:
+            # 判断是本地文件还是 URL
+            if image_path.startswith(("http://", "https://")):
+                image_data = image_path
+            else:
+                path = Path(image_path)
+                if not path.exists():
+                    logger.error("[Receiver] 图片文件不存在: {}", image_path)
+                    return None
+                # 根据扩展名确定 MIME 类型
+                ext = path.suffix.lower()
+                mime_map = {
+                    ".png": "image/png",
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".gif": "image/gif",
+                    ".webp": "image/webp",
+                }
+                mime_type = mime_map.get(ext, "image/png")
+                image_data = MiMoProvider.encode_image_file(str(path), mime_type)
+
+            prompt = f"请详细描述这张图片的内容。{'用户同时说: ' + context if context else ''}"
+            description = await self.mimo.understand_image(image_data, prompt=prompt)
+            logger.info("[Receiver] 图片理解完成: {}", description[:100])
+            return description
+
+        except Exception as e:
+            logger.error("[Receiver] 图片理解失败: {}", e)
+            return f"[图片理解失败: {e}]"
+
+    async def _transcribe_voice(self, voice_path: str) -> Optional[str]:
+        """
+        调用 MiMo ASR 识别语音
+
+        Args:
+            voice_path: 音频文件路径
+
+        Returns:
+            识别出的文本，失败返回 None
+        """
+        try:
+            path = Path(voice_path)
+            if not path.exists():
+                logger.error("[Receiver] 音频文件不存在: {}", voice_path)
+                return None
+
+            ext = path.suffix.lower()
+            mime_map = {
+                ".wav": "audio/wav",
+                ".mp3": "audio/mpeg",
+                ".m4a": "audio/mp4",
+                ".ogg": "audio/ogg",
+            }
+            mime_type = mime_map.get(ext, "audio/wav")
+            audio_data = MiMoProvider.encode_audio_file(str(path), mime_type)
+
+            text = await self.mimo.transcribe(audio_data)
+            logger.info("[Receiver] 语音识别完成: {}", text[:100])
+            return text
+
+        except Exception as e:
+            logger.error("[Receiver] 语音识别失败: {}", e)
+            return f"[语音识别失败: {e}]"
