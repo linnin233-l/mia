@@ -12,7 +12,7 @@ TaskAgent 自己也是一个小的 LLM 循环，但它只关心"怎么做"，
 
 import json
 import re
-import time
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from loguru import logger
@@ -29,6 +29,7 @@ from mia.providers.base import BaseProvider
 from mia.tools.base import Tool, ToolResult
 from mia.tools.shell import ShellTool
 from mia.tools.web_search import WebSearchTool
+from mia.tools.weather import WeatherTool
 from mia.tools.file import FileTool
 
 
@@ -40,7 +41,7 @@ TASK_AGENT_SYSTEM_PROMPT = """你是一个任务执行器(TaskAgent)。你会收
 ## 核心原则：尽早完成！
 - 你最多只能执行 5 次工具调用。如果你用完了所有次数还未 finish，任务会失败。
 - 因此，一旦你获得了足够回答用户的信息，立即 finish，不要无限优化搜索词。
-- 最多调用 2 次同类工具。如果前 2 次搜索没有找到好结果，用已有的信息合成答案，不要继续搜。
+- **硬性限制：最多调用 2 次同类工具（web_search 算同类）。第 2 次搜索后不管结果如何，必须立即 finish。**
 - 搜索工具返回的结果可能不完美，这很正常 — 从已有结果中提取有用信息即可。
 
 ## 工作方式
@@ -68,6 +69,7 @@ TASK_AGENT_SYSTEM_PROMPT = """你是一个任务执行器(TaskAgent)。你会收
 4. 如果工具调用失败，分析原因后决定重试（最多1次）还是放弃
 5. 结果要简洁但完整，包含用户需要的信息
 6. 用中文组织最终结果
+7. 天气查询直接用 weather 工具，不要用 web_search 搜天气
 """
 
 
@@ -109,7 +111,7 @@ class TaskAgent(BaseAgent):
                 self.tools[tool.name] = tool
         else:
             # 默认注册全部内置工具
-            default_tools = [ShellTool(), WebSearchTool(), FileTool()]
+            default_tools = [ShellTool(), WebSearchTool(), WeatherTool(), FileTool()]
             for tool in default_tools:
                 self.tools[tool.name] = tool
 
@@ -178,9 +180,13 @@ class TaskAgent(BaseAgent):
         # 构建工具描述
         tools_desc = self._build_tools_description(tools_hint)
 
+        # 注入当前日期时间，防止 LLM 用 knowledge cutoff 的日期
+        now = datetime.now(timezone(timedelta(hours=8)))  # CST 北京时间
+        date_context = f"当前北京时间: {now.strftime('%Y年%m月%d日 %H:%M')} (星期{['一','二','三','四','五','六','日'][now.weekday()]})"
+
         messages = [
             {"role": "system", "content": TASK_AGENT_SYSTEM_PROMPT},
-            {"role": "user", "content": f"## 可用工具\n{tools_desc}\n\n## 任务\n{task}\n\n请开始执行。只返回 JSON。"},
+            {"role": "user", "content": f"{date_context}\n\n## 可用工具\n{tools_desc}\n\n## 任务\n{task}\n\n请开始执行。只返回 JSON。"},
         ]
 
         for iteration in range(self.MAX_ITERATIONS):
@@ -304,7 +310,7 @@ class TaskAgent(BaseAgent):
                 return await self.fallback_provider.chat_sync(
                     messages=messages,
                     model=self.fallback_model,
-                    max_tokens=1024,
+                    max_tokens=2048,  # 与主 Provider 保持一致
                     temperature=0.3,
                 )
             except Exception as e:

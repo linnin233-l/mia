@@ -57,7 +57,11 @@ class WebSearchTool(Tool):
 
         try:
             # DuckDuckGo 搜索 (在线程池中运行，因为它是同步API)
-            from duckduckgo_search import DDGS
+            # 优先尝试新版包名 ddgs，降级到旧版 duckduckgo_search
+            try:
+                from ddgs import DDGS
+            except ImportError:
+                from duckduckgo_search import DDGS  # type: ignore[no-retyped]
 
             results = await asyncio.get_event_loop().run_in_executor(
                 None,
