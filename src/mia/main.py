@@ -379,10 +379,13 @@ async def run_cli_interactive() -> None:
                 await _handle_compact(memory_agent)
                 continue
 
-            # /memory — 交互式记忆浏览器 (TUI: 日期→条目→详情 3级钻取)
+            # /memory — 交互式记忆浏览器 (临时 + 持久, 3级钻取)
             if user_input.lower() == "/memory":
                 from mia.memory.browser import MemoryBrowser
-                browser = MemoryBrowser(memory_agent.store)
+                browser = MemoryBrowser(
+                    memory_agent.store,
+                    working_entries=memory_agent._working_memory,
+                )
                 await browser.browse()
                 continue
 

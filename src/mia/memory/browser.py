@@ -37,17 +37,24 @@ class MemoryBrowser:
     Level 2: 知识条目列表 (类别图标 + 内容预览)
     Level 3: 详情表格 (全部 9 个字段)
 
+    同时展示临时记忆 (working memory) 和持久知识 (persistent store)。
     纯只读，不修改 MemoryStore。
     """
 
     DISPLAY_DAYS = 30  # Level 1 最多展示的天数
 
-    def __init__(self, store: MemoryStore):
+    def __init__(
+        self,
+        store: MemoryStore,
+        working_entries: list[KnowledgeEntry] | None = None,
+    ):
         """
         Args:
-            store: MemoryStore 实例 (只读访问)
+            store: MemoryStore 实例 (持久知识，只读)
+            working_entries: 临时记忆列表 (Level 1 working memory, 只读)
         """
         self.store = store
+        self.working_entries: list[KnowledgeEntry] = working_entries or []
         self._use_tui = True
 
     # ═══════════════════════════════════════════════════════
@@ -57,10 +64,13 @@ class MemoryBrowser:
     async def browse(self) -> None:
         """主入口 — 启动交互式知识浏览
 
-        知识为空时打印提示并立即返回。
+        同时展示临时记忆 (working) 和持久知识 (persistent)。
+        两者均为空时才打印提示。
         """
-        if self.store.count == 0:
-            print("  \033[90m知识库为空。\033[0m")
+        total = self.store.count + len(self.working_entries)
+        if total == 0:
+            print("  \033[90m知识库为空 (无临时记忆 + 无持久知识)。\033[0m")
+            print("  \033[90m提示: 先进行一轮对话让 Agent 提取知识。\033[0m")
             return
 
         # 尝试导入 questionary
@@ -269,75 +279,106 @@ class MemoryBrowser:
     # ═══════════════════════════════════════════════════════
 
     async def _browse_flat(self) -> None:
-        """Flat 模式: 依次打印日期 → 条目 → 可选序号查看详情
+        """Flat 模式: 先展示临时记忆，再按日期展示持久知识
 
-        每次展示某天的条目后，用户可以输入序号查看完整知识详情（Level 3）。
-        直接按 Enter 则继续下一日，输入 q 则退出浏览。
+        临时记忆 (working memory) 展示在最上方，标记为 [临时]。
+        用户可输入序号查看完整详情（Level 3）。
         """
-        index = self.store.get_index_summaries()
-        if not index:
+        interactive = _is_interactive()
+        loop = asyncio.get_event_loop()
+        persistent_total = self.store.get_total_count()
+        working_total = len(self.working_entries)
+        total = persistent_total + working_total
+
+        print(f"\n  \033[90m知识库: {working_total} 条临时 + {persistent_total} 条持久, 共 {total} 条\033[0m")
+        print(f"  \033[90m输入序号查看详情 | Enter 下一组 | q 退出\033[0m")
+        print()
+
+        # ─── 构建全局序号映射 (临时记忆 + 持久知识) ──
+        # 临时记忆在前，持久知识在后
+        all_entries: list[tuple[str, KnowledgeEntry]] = []
+
+        # 临时记忆
+        for entry in self.working_entries:
+            all_entries.append(("working", entry))
+
+        # 持久知识
+        for entry in self.store.get_all():
+            all_entries.append(("persistent", entry))
+
+        if not all_entries:
             print("  \033[90m知识库为空。\033[0m")
             return
 
-        total = self.store.get_total_count()
-        print(f"\n  \033[90m知识库: {len(index)} 天, {total} 条知识\033[0m")
-        print(f"  \033[90m输入序号查看详情 | Enter 下一日 | q 退出\033[0m")
-        print()
+        # 构建序号 → entry 映射
+        entry_by_index: dict[int, KnowledgeEntry] = {}
+        for i, (source, entry) in enumerate(all_entries):
+            entry_by_index[i + 1] = entry
 
-        interactive = _is_interactive()
-        loop = asyncio.get_event_loop()
-
-        for date, ds in list(index.items())[:self.DISPLAY_DAYS]:
-            summary_hint = f" — {ds.daily_summary}" if ds.daily_summary else ""
-            print(f"  \033[33m{date}\033[0m ({ds.entry_count}条){summary_hint}")
-
-            entries = self.store.load_day(date)
-            # 构建序号 → entry 映射
-            entry_by_index: dict[int, KnowledgeEntry] = {}
-            for i, entry in enumerate(entries):
-                entry_by_index[i + 1] = entry
+        # ─── 展示临时记忆 ───────────────────────
+        if self.working_entries:
+            print(f"  \033[33m临时记忆\033[0m ({working_total}条) \033[90m— 待持久化，低置信度\033[0m")
+            for i, entry in enumerate(self.working_entries):
                 cat_label = entry.category_label
                 preview = entry.content.replace("\n", " ")[:80]
                 if len(entry.content) > 80:
                     preview += "..."
                 conf_str = f"\033[90m({entry.confidence:.1f})\033[0m"
-                print(f"    \033[90m[{i+1}]\033[0m {cat_label} {preview} {conf_str}")
+                global_idx = i + 1  # 临时记忆从 1 开始
+                tag = " \033[93m[临时]\033[0m" if entry.confidence <= 0.5 else ""
+                print(f"    \033[90m[{global_idx}]\033[0m {cat_label} {preview} {conf_str}{tag}")
+            print()
 
-            if not interactive or len(entries) == 0:
-                print()
-                continue
+        # ─── 展示持久知识 (按日期分组) ────────
+        index = self.store.get_index_summaries()
+        idx_offset = working_total  # 持久条目序号从 working_total+1 开始
 
-            # ─── 交互循环: 查看详情 ─────────────────
-            while True:
-                print()
-                try:
-                    user_input = await loop.run_in_executor(
-                        None, input,
-                        "  \033[36m序号 (1-{}) / Enter 继续 / q 退出 > \033[0m".format(
-                            len(entries),
-                        ),
-                    )
-                except (EOFError, OSError):
-                    break  # 非交互环境，退出循环
+        if index:
+            for date, ds in list(index.items())[:self.DISPLAY_DAYS]:
+                summary_hint = f" — {ds.daily_summary}" if ds.daily_summary else ""
+                print(f"  \033[33m{date}\033[0m ({ds.entry_count}条){summary_hint}")
 
-                user_input = user_input.strip().lower()
+                entries = self.store.load_day(date)
+                for i, entry in enumerate(entries):
+                    global_idx = idx_offset + i + 1
+                    cat_label = entry.category_label
+                    preview = entry.content.replace("\n", " ")[:80]
+                    if len(entry.content) > 80:
+                        preview += "..."
+                    conf_str = f"\033[90m({entry.confidence:.1f})\033[0m"
+                    print(f"    \033[90m[{global_idx}]\033[0m {cat_label} {preview} {conf_str}")
+                idx_offset += len(entries)
+        elif not self.working_entries:
+            print("  \033[90m持久知识为空。\033[0m")
 
-                if user_input == "":
-                    break  # Enter → 下一日
-                if user_input == "q":
-                    print("  \033[90m退出浏览。\033[0m")
-                    return  # 立即退出
+        # ─── 交互循环: 查看详情 ─────────────────
+        if not interactive:
+            print()
+            return
 
-                # 尝试解析为序号
-                try:
-                    idx = int(user_input)
-                    entry = entry_by_index.get(idx)
-                    if entry:
-                        self._show_detail_plain(entry)
-                    else:
-                        print(f"  \033[90m无效序号: {idx}，范围 1-{len(entries)}\033[0m")
-                except ValueError:
-                    print(f"  \033[90m无效输入: '{user_input}'，输入数字、Enter 或 q\033[0m")
+        while True:
+            print()
+            try:
+                user_input = await loop.run_in_executor(
+                    None, input,
+                    f"  \033[36m序号 (1-{len(all_entries)}) / Enter 退出 / q 退出 > \033[0m",
+                )
+            except (EOFError, OSError):
+                break
+
+            user_input = user_input.strip().lower()
+            if user_input == "" or user_input == "q":
+                break
+
+            try:
+                idx = int(user_input)
+                entry = entry_by_index.get(idx)
+                if entry:
+                    self._show_detail_plain(entry)
+                else:
+                    print(f"  \033[90m无效序号: {idx}，范围 1-{len(all_entries)}\033[0m")
+            except ValueError:
+                print(f"  \033[90m无效输入: '{user_input}'，输入数字、Enter 或 q\033[0m")
 
         print()
 
