@@ -9,9 +9,11 @@ MIA Memory Package — 记忆管理模块
 分级存储架构 (v2):
   - store.py: MemoryEntry + DaySummary + MemoryStore (index + daily shards)
   - retriever.py: MemoryRetriever (两阶段: 扫索引 → 深搜)
+  - browser.py: MemoryBrowser (交互式 TUI: 日期→条目→详情 3级钻取)
 """
 
 from mia.memory.store import MemoryEntry, MemoryStore, DaySummary
 from mia.memory.retriever import MemoryRetriever
+from mia.memory.browser import MemoryBrowser
 
-__all__ = ["MemoryEntry", "MemoryStore", "MemoryRetriever", "DaySummary"]
+__all__ = ["MemoryEntry", "MemoryStore", "MemoryRetriever", "DaySummary", "MemoryBrowser"]
