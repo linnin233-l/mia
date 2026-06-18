@@ -269,7 +269,11 @@ class MemoryBrowser:
     # ═══════════════════════════════════════════════════════
 
     async def _browse_flat(self) -> None:
-        """Flat 模式: 依次打印日期 → 条目，用 input 分页"""
+        """Flat 模式: 依次打印日期 → 条目 → 可选序号查看详情
+
+        每次展示某天的条目后，用户可以输入序号查看完整知识详情（Level 3）。
+        直接按 Enter 则继续下一日，输入 q 则退出浏览。
+        """
         index = self.store.get_index_summaries()
         if not index:
             print("  \033[90m知识库为空。\033[0m")
@@ -277,33 +281,63 @@ class MemoryBrowser:
 
         total = self.store.get_total_count()
         print(f"\n  \033[90m知识库: {len(index)} 天, {total} 条知识\033[0m")
+        print(f"  \033[90m输入序号查看详情 | Enter 下一日 | q 退出\033[0m")
         print()
 
         interactive = _is_interactive()
+        loop = asyncio.get_event_loop()
 
         for date, ds in list(index.items())[:self.DISPLAY_DAYS]:
             summary_hint = f" — {ds.daily_summary}" if ds.daily_summary else ""
             print(f"  \033[33m{date}\033[0m ({ds.entry_count}条){summary_hint}")
 
             entries = self.store.load_day(date)
+            # 构建序号 → entry 映射
+            entry_by_index: dict[int, KnowledgeEntry] = {}
             for i, entry in enumerate(entries):
+                entry_by_index[i + 1] = entry
                 cat_label = entry.category_label
                 preview = entry.content.replace("\n", " ")[:80]
                 if len(entry.content) > 80:
                     preview += "..."
-                # 显示置信度
                 conf_str = f"\033[90m({entry.confidence:.1f})\033[0m"
                 print(f"    \033[90m[{i+1}]\033[0m {cat_label} {preview} {conf_str}")
 
-            if interactive and len(entries) > 0:
+            if not interactive or len(entries) == 0:
+                print()
+                continue
+
+            # ─── 交互循环: 查看详情 ─────────────────
+            while True:
                 print()
                 try:
-                    await asyncio.get_event_loop().run_in_executor(
+                    user_input = await loop.run_in_executor(
                         None, input,
-                        f"  \033[90m按 Enter 继续...\033[0m",
+                        "  \033[36m序号 (1-{}) / Enter 继续 / q 退出 > \033[0m".format(
+                            len(entries),
+                        ),
                     )
                 except (EOFError, OSError):
-                    pass  # 非交互环境，跳过
+                    break  # 非交互环境，退出循环
+
+                user_input = user_input.strip().lower()
+
+                if user_input == "":
+                    break  # Enter → 下一日
+                if user_input == "q":
+                    print("  \033[90m退出浏览。\033[0m")
+                    return  # 立即退出
+
+                # 尝试解析为序号
+                try:
+                    idx = int(user_input)
+                    entry = entry_by_index.get(idx)
+                    if entry:
+                        self._show_detail_plain(entry)
+                    else:
+                        print(f"  \033[90m无效序号: {idx}，范围 1-{len(entries)}\033[0m")
+                except ValueError:
+                    print(f"  \033[90m无效输入: '{user_input}'，输入数字、Enter 或 q\033[0m")
 
         print()
 

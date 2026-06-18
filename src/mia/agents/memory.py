@@ -312,12 +312,32 @@ class MemoryAgent(BaseAgent):
                     len(extracted), len(self._working_memory),
                 )
         except asyncio.TimeoutError:
-            logger.warning("[MemoryAgent] 临时知识提取超时 ({:.0f}s)，跳过本轮",
+            logger.warning("[MemoryAgent] 临时知识提取超时 ({:.0f}s)，降级为本地提取",
                            self.EXTRACTION_TIMEOUT)
+            # 降级: 本地提取基础知识，不依赖 LLM，保证知识不丢失
+            fallback_entry = self._local_extract_knowledge(
+                user_msg=self._pending_original or self._pending_intent,
+                assistant_reply=reply,
+                session_id=session_id,
+            )
+            if fallback_entry:
+                self._working_memory.append(fallback_entry)
+                logger.info(
+                    "[MemoryAgent] 本地降级提取: 1 条, working_total={}",
+                    len(self._working_memory),
+                )
         except asyncio.CancelledError:
             logger.warning("[MemoryAgent] 临时知识提取被取消")
         except Exception as e:
             logger.warning("[MemoryAgent] 临时知识提取失败: {}", e)
+            # 同样降级为本地提取
+            fallback_entry = self._local_extract_knowledge(
+                user_msg=self._pending_original or self._pending_intent,
+                assistant_reply=reply,
+                session_id=session_id,
+            )
+            if fallback_entry:
+                self._working_memory.append(fallback_entry)
 
         # ─── 3. 检查是否需要强制合并 ──────────────
         if len(self._working_memory) >= self.MAX_WORKING_ENTRIES:
@@ -402,6 +422,68 @@ class MemoryAgent(BaseAgent):
             ))
 
         return entries
+
+    # ═══════════════════════════════════════════════════════
+    # 本地降级提取 (无 LLM)
+    # ═══════════════════════════════════════════════════════
+
+    def _local_extract_knowledge(
+        self,
+        user_msg: str,
+        assistant_reply: str,
+        session_id: str,
+    ) -> Optional[KnowledgeEntry]:
+        """本地降级提取 — LLM 不可用时从原始对话创建基础知识条目
+
+        不依赖任何外部 API，纯本地处理:
+          1. 取用户消息的前 200 字作为知识内容
+          2. 简单中文分词提取关键词
+          3. 默认类别 fact，低置信度 0.3
+
+        这个条目会在后续 Level 2 合并时被 LLM 重新处理。
+
+        Args:
+            user_msg: 用户消息原文
+            assistant_reply: 助手回复原文
+            session_id: 会话 ID
+
+        Returns:
+            KnowledgeEntry 或 None (消息太短时)
+        """
+        # 取用户消息作为知识来源 (用户的提问/需求本身就是有价值的信息)
+        source = user_msg.strip()
+        if len(source) < 4:
+            return None
+
+        # 截断过长的消息
+        content = source[:200]
+        if len(source) > 200:
+            content += "..."
+
+        # 简单中文分词提取关键词
+        import re
+        raw_tokens = re.findall(r'[一-鿿\w]{2,}', source)
+        # 过滤停用词
+        stopwords = {
+            "请问", "帮我", "我想", "可以", "什么", "怎么", "如何",
+            "这个", "那个", "这是", "查询", "一下", "用户说",
+            "用户问", "一个", "这个", "现在", "还是", "是不是",
+        }
+        keywords = [t for t in raw_tokens if t not in stopwords][:5]
+
+        logger.debug(
+            "[MemoryAgent] 本地提取: content={}, keywords={}",
+            content[:60], keywords,
+        )
+
+        return KnowledgeEntry(
+            content=content,
+            category=CATEGORY_FACT,       # 默认事实
+            confidence=0.3,               # 低置信度，标记为待 LLM 验证
+            keywords=keywords,
+            importance=0.3,               # 低重要性
+            source_sessions=[session_id],
+        )
 
     # ═══════════════════════════════════════════════════════
     # Level 2: 知识合并去重 (持久化)

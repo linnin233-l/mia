@@ -483,6 +483,64 @@ async def test_fallback_persist():
 
 
 # ═══════════════════════════════════════════════════════════
+# 测试 6: 本地降级提取 (LLM 超时时)
+# ═══════════════════════════════════════════════════════════
+
+async def test_local_extraction_fallback():
+    """验证: LLM 超时时 _local_extract_knowledge() 保证知识不丢失"""
+    tmpdir = Path(tempfile.mkdtemp(prefix="mia_test_lo_"))
+    agent = bus = task = None
+    try:
+        agent, bus, task = await _create_agent(tmpdir)
+
+        # ─── 直接测试 _local_extract_knowledge ──────
+        entry = agent._local_extract_knowledge(
+            user_msg="查询一下嘉兴明天的天气",
+            assistant_reply="嘉兴明天23-30度，阵雨...",
+            session_id="s_test",
+        )
+
+        # ─── 断言 ────────────────────────────────────
+        assert entry is not None, "本地提取应返回条目"
+        assert len(entry.content) >= 4, f"内容应 >= 4 字: {entry.content}"
+        assert "嘉兴" in entry.content or "天气" in entry.content, \
+            f"内容应包含用户消息关键词: {entry.content}"
+        assert entry.category == CATEGORY_FACT, \
+            f"默认类别应为 fact: {entry.category}"
+        assert entry.confidence == 0.3, \
+            f"confidence 应为 0.3 (低置信): {entry.confidence}"
+        assert entry.importance == 0.3, \
+            f"importance 应为 0.3 (待验证): {entry.importance}"
+        assert entry.source_sessions == ["s_test"], \
+            f"source_sessions 应包含 s_test: {entry.source_sessions}"
+        assert len(entry.keywords) >= 1, \
+            f"应有至少 1 个关键词: {entry.keywords}"
+
+        # 验证停用词被过滤
+        for kw in entry.keywords:
+            assert kw not in {"查询", "一下"}, \
+                f"停用词应被过滤: {kw}"
+
+        print(f"  本地提取: [{entry.category_label}] {entry.content[:50]}...")
+        print(f"    confidence={entry.confidence}, keywords={entry.keywords}")
+        print("  [OK] test_local_extraction_fallback 通过")
+
+        # ─── 测试消息太短时返回 None ─────────────────
+        short_entry = agent._local_extract_knowledge(
+            user_msg="你好",
+            assistant_reply="你好",
+            session_id="s_short",
+        )
+        assert short_entry is None, \
+            f"消息太短应返回 None: {short_entry}"
+        print("  [OK] 短消息边界 (返回 None) 通过")
+
+    finally:
+        if agent and bus and task:
+            await _cleanup(agent, bus, task, tmpdir)
+
+
+# ═══════════════════════════════════════════════════════════
 # 运行所有测试
 # ═══════════════════════════════════════════════════════════
 
@@ -498,6 +556,7 @@ async def main():
         ("合并检索 working+persistent", test_retrieve_merged),
         ("MemoryStore CRUD", test_store_knowledge_crud),
         ("降级持久化", test_fallback_persist),
+        ("本地降级提取 (LLM 超时)", test_local_extraction_fallback),
     ]
 
     passed = 0
