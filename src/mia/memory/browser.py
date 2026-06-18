@@ -171,9 +171,10 @@ class MemoryBrowser:
                     label += f"  \033[90m{' '.join(cat_parts)}\033[0m"
             choices.append(questionary.Choice(title=label, value=date))
 
+        # 使用 sentinel 字符串避免 questionary 在 Windows 下 None 值异常
         choices.append(questionary.Choice(
             title="[返回] 退出浏览器",
-            value=None,
+            value="__EXIT_BROWSER__",
         ))
 
         total = self.store.get_total_count()
@@ -187,11 +188,12 @@ class MemoryBrowser:
                 qmark=">",
                 instruction="(↑↓ 移动, Enter 选择, Esc 退出)",
             ).ask_async()
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError, Exception) as e:
+            logger.debug("[MemoryBrowser] 日期选择退出: {}", type(e).__name__)
             self._exit_requested = True
             return None
 
-        if result is None:
+        if result is None or result == "__EXIT_BROWSER__":
             self._exit_requested = True
 
         return result
@@ -239,9 +241,10 @@ class MemoryBrowser:
             # 使用 entry.id (str) 作为 value，不是 entry 对象
             choices.append(questionary.Choice(title=label, value=entry.id))
 
+        # 使用 sentinel 字符串避免 questionary 在 Windows 下 None 值异常
         choices.append(questionary.Choice(
             title="[返回] 上一级",
-            value=None,
+            value="__EXIT_ENTRIES__",
         ))
 
         try:
@@ -252,11 +255,12 @@ class MemoryBrowser:
                 qmark=">",
                 instruction="(↑↓ 移动, Enter 查看详情, Esc 返回)",
             ).ask_async()
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError, Exception) as e:
+            logger.debug("[MemoryBrowser] 条目选择退出: {}", type(e).__name__)
             self._exit_requested = True
             return None
 
-        if result is None:
+        if result is None or result == "__EXIT_ENTRIES__":
             self._exit_requested = True
 
         return result
