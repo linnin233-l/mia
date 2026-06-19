@@ -61,14 +61,42 @@ class MiaTuiApp(App):
 
     # 内嵌 CSS (避免文件路径缓存问题)
     CSS = """
-    Screen { background: #1a1b26; color: #c0caf5; }
+    Screen {
+        background: #1a1b26;
+        color: #c0caf5;
+        layout: grid;
+        grid-rows: auto 1fr auto;
+        grid-gutter: 0;
+    }
+
+    Header { row: 0; }
 
     #chat-history {
-        height: 1fr;
+        row: 1;
         overflow-y: auto;
         padding: 1 2;
         scrollbar-color: #3b4261;
     }
+
+    #input-area {
+        row: 2;
+        height: auto;
+        min-height: 3;
+        background: #16161e;
+        padding: 0 1 1 1;
+        border-top: solid #3b4261;
+    }
+    #input-area Input {
+        width: 1fr;
+        background: #1a1b26;
+        color: #c0caf5;
+        border: solid #3b4261;
+        margin: 0 1 0 0;
+    }
+    #input-area Input:focus { border: solid #7aa2f7; }
+
+    #send-button { width: 8; background: #7aa2f7; color: #1a1b26; text-style: bold; }
+    #send-button:hover { background: #9ece6a; }
 
     MessageBubble { margin: 0 0 1 0; padding: 1 2; }
     MessageBubble.user { border-left: solid #7aa2f7; }
@@ -95,16 +123,6 @@ class MiaTuiApp(App):
 
     StreamingText { color: #c0caf5; margin: 0 0 1 0; }
     StreamingText .prefix { color: #9ece6a; text-style: bold; }
-
-    #input-area {
-        dock: bottom; height: 3; background: #16161e;
-        padding: 0 1; border-top: solid #3b4261;
-    }
-    #input-area Input { width: 1fr; background: #1a1b26; color: #c0caf5; border: solid #3b4261; margin: 0 1 0 0; }
-    #input-area Input:focus { border: solid #7aa2f7; }
-
-    #send-button { width: 8; background: #7aa2f7; color: #1a1b26; text-style: bold; }
-    #send-button:hover { background: #9ece6a; }
 
     .system-message { color: #565f89; margin: 0 0 1 0; padding: 0 2; }
 
@@ -148,10 +166,10 @@ class MiaTuiApp(App):
     def compose(self) -> ComposeResult:
         """构建 TUI 布局
 
-        三层结构:
-          Header  — 标题 + 时钟 (自动高度)
-          #chat-history — 聊天历史 (1fr, 填充剩余空间)
-          #input-area  — 底部输入 (dock: bottom, 固定高度 3)
+        Grid 三行布局:
+          row 0: Header (auto 高度)
+          row 1: #chat-history (1fr, 填充剩余空间)
+          row 2: #input-area (auto/min-height: 3, 底部固定)
         """
         yield Header(show_clock=True, name="MIA")
         yield ScrollableContainer(id="chat-history")
