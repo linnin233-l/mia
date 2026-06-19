@@ -1,8 +1,2 @@
-__pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-.env
-workspace/
-data/memory/
-.pytest_cache/
+logs/
+*.log
