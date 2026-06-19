@@ -405,13 +405,14 @@ class MiaTuiApp:
         while self._running:
             try:
                 # 非阻塞轮询，使用短超时保持响应性
-                sender_msg = await self.bus.receive("sender", timeout=0.02)
-                if sender_msg:
-                    self._handle_sender_message(sender_msg)
-
+                # 注意: 先轮询 tui 通道，确保思考过程在消息输出之前渲染
                 tui_msg = await self.bus.receive("tui", timeout=0.02)
                 if tui_msg:
                     self._handle_tui_message(tui_msg)
+
+                sender_msg = await self.bus.receive("sender", timeout=0.02)
+                if sender_msg:
+                    self._handle_sender_message(sender_msg)
 
             except asyncio.CancelledError:
                 break

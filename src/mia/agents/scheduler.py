@@ -214,7 +214,7 @@ class SchedulerAgent(BaseAgent):
         logger.info("[Scheduler] 收到用户意图: {}", msg.payload.get("intent", ""))
 
         # 打印思考前缀
-        self._print_thought("分析用户意图", msg.payload.get("intent", ""))
+        await self._print_thought("分析用户意图", msg.payload.get("intent", ""))
 
         # 进入 LLM 循环
         await self._run_loop(msg)
@@ -225,11 +225,11 @@ class SchedulerAgent(BaseAgent):
 
         if is_error:
             logger.warning("[Scheduler] 收到任务错误: {}", msg.payload.get("error", ""))
-            self._print_thought("收到任务错误", msg.payload.get("error", ""))
+            await self._print_thought("收到任务错误", msg.payload.get("error", ""))
         else:
             result = msg.payload.get("result", "")
             logger.info("[Scheduler] 收到任务结果: {}", result)
-            self._print_thought("收到任务结果", result)
+            await self._print_thought("收到任务结果", result)
 
         # 继续 LLM 循环
         self._iteration += 1
@@ -412,7 +412,7 @@ class SchedulerAgent(BaseAgent):
                 # 如果 decision JSON 中没有 message (不太可能但做 fallback)
                 if not message:
                     message = await self._generate_fallback_reply(trigger_msg)
-                self._print_thought("决策: 语音回复用户", reasoning)
+                await self._print_thought("决策: 语音回复用户", reasoning)
                 voice = detail.get("voice", "冰糖")
                 await self.send(make_send_voice(
                     message=message,
@@ -421,13 +421,13 @@ class SchedulerAgent(BaseAgent):
                 ))
             elif self.enable_streaming:
                 # 文字回复：流式输出！
-                self._print_thought("决策: 流式回复用户", reasoning)
+                await self._print_thought("决策: 流式回复用户", reasoning)
                 await self._stream_reply(trigger_msg)
             else:
                 # 文字回复：流式关闭 → 非流式 fallback
                 if not message:
                     message = await self._generate_fallback_reply(trigger_msg)
-                self._print_thought("决策: 回复用户", reasoning)
+                await self._print_thought("决策: 回复用户", reasoning)
                 await self.send(make_send_text(
                     message=message,
                     session_id=self._session_id,
@@ -442,7 +442,7 @@ class SchedulerAgent(BaseAgent):
             # 检查重复任务
             if task in self._task_history:
                 logger.warning("[Scheduler] 检测到重复任务: {}", task)
-                self._print_thought("检测到重复任务，跳过", f"任务: {task}\n理由: {reasoning}")
+                await self._print_thought("检测到重复任务，跳过", f"任务: {task}\n理由: {reasoning}")
                 # 不真正执行，而是模拟一个结果继续循环
                 fake_result = Message(
                     msg_type=MessageType.TASK_RESULT,
@@ -460,7 +460,7 @@ class SchedulerAgent(BaseAgent):
             self._task_history.append(task)
             self._consecutive_tasks += 1
 
-            self._print_thought(
+            await self._print_thought(
                 f"决策: 执行任务 (第{self._consecutive_tasks}次)",
                 f"理由: {reasoning}\n任务: {task}",
             )
@@ -477,7 +477,7 @@ class SchedulerAgent(BaseAgent):
         elif action == "done":
             # 标记完成
             logger.info("[Scheduler] 对话完成, action=done")
-            self._print_thought("任务完成", reasoning)
+            await self._print_thought("任务完成", reasoning)
 
         else:
             logger.warning("[Scheduler] 未知 action: {}, 降级为 reply", action)
@@ -691,20 +691,18 @@ class SchedulerAgent(BaseAgent):
     # conversation_memory 和 compact_memory() 现在由 MemoryAgent 管理
     # SchedulerAgent 通过 payload["memory_context"] 消费记忆上下文
 
-    def _print_thought(self, title: str, detail: str) -> None:
+    async def _print_thought(self, title: str, detail: str) -> None:
         """结构化输出思考过程 — CLI 模式打印，TUI 模式只发布到 bus"""
         # TUI 模式: 只发布到 bus，不 print (避免污染终端)
         from mia.config import get_config
         is_tui = get_config().agent.tui_active
 
         if is_tui:
-            # 只发布 TUI 消息
+            # 只发布 TUI 消息 — 用 await 保证消息到达顺序
             try:
                 if self.bus:
-                    asyncio.ensure_future(
-                        self.bus.publish(
-                            make_tui_thought("scheduler", title, detail)
-                        )
+                    await self.bus.publish(
+                        make_tui_thought("scheduler", title, detail)
                     )
             except Exception:
                 pass
