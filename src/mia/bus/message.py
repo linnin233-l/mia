@@ -35,19 +35,6 @@ class MessageType(enum.Enum):
     STREAM_END = "stream_end"
     """流式回复结束: Scheduler 通知 Sender 流式文本已完成"""
 
-    # ─── TUI 界面消息 (Scheduler/Task/Memory → TUI App) ──
-    TUI_THOUGHT = "tui_thought"
-    """思考过程: Agent 向 TUI 发送思考/推理过程 (可折叠展示)"""
-
-    TUI_TOOL = "tui_tool"
-    """工具调用: TaskAgent 向 TUI 发送工具调用和结果"""
-
-    TUI_TOAST = "tui_toast"
-    """通知提示: 向 TUI 发送 toast 通知 (info/success/warning/error)"""
-
-    TUI_STATUS = "tui_status"
-    """状态栏更新: 向 TUI 发送状态栏键值对更新"""
-
     # ─── Scheduler ⇄ TaskAgent ─────────────────────────
     EXECUTE_TASK = "execute_task"
     """任务执行指令: Scheduler 要求 TaskAgent 执行任务"""
@@ -67,6 +54,16 @@ class MessageType(enum.Enum):
 
     CONVERSATION_DONE = "conversation_done"
     """对话完成通知 (Sender → Main)"""
+
+    # ─── TUI 显示消息 ──────────────────────────────────
+    TUI_THOUGHT = "tui_thought"
+    """思考过程: Agent 发送给 TUI 显示的思考内容"""
+
+    TUI_TOOL = "tui_tool"
+    """工具调用: Agent 发送给 TUI 显示的工具执行状态"""
+
+    TUI_STATUS = "tui_status"
+    """状态更新: Agent 发送给 TUI 显示的状态信息"""
 
     # ─── 用户输入 (内部) ───────────────────────────────
     RAW_INPUT = "raw_input"
@@ -337,23 +334,19 @@ def make_tui_thought(
     detail: str = "",
     session_id: Optional[str] = None,
 ) -> Message:
-    """构建 TUI_THOUGHT 消息 — Agent 思考过程
+    """构建 TUI_THOUGHT 消息 — Agent 思考过程显示
 
     Args:
-        agent: Agent 名称 (scheduler/task/memory/receiver)
-        title: 思考标题 (如 "分析用户意图")
-        detail: 思考详情 (如 reasoning 文本)
+        agent: Agent 名称 (如 'scheduler', 'task_agent')
+        title: 思考标题
+        detail: 详细描述 (可选)
         session_id: 会话 ID
     """
     return Message(
         msg_type=MessageType.TUI_THOUGHT,
         source=agent,
         target="tui",
-        payload={
-            "agent": agent,
-            "title": title,
-            "detail": detail,
-        },
+        payload={"agent": agent, "title": title, "detail": detail},
         session_id=session_id,
     )
 
@@ -365,13 +358,13 @@ def make_tui_tool(
     status: str = "running",
     session_id: Optional[str] = None,
 ) -> Message:
-    """构建 TUI_TOOL 消息 — 工具调用和结果
+    """构建 TUI_TOOL 消息 — 工具调用状态显示
 
     Args:
-        tool_name: 工具名称 (web_search/weather/shell/file)
-        tool_args: 工具调用参数
-        result: 工具执行结果文本
-        status: 状态 (running/success/error)
+        tool_name: 工具名称
+        tool_args: 工具参数 (简要描述)
+        result: 执行结果 (success/error 时)
+        status: 状态 ('running', 'success', 'error')
         session_id: 会话 ID
     """
     return Message(
@@ -388,49 +381,22 @@ def make_tui_tool(
     )
 
 
-def make_tui_toast(
-    level: str,
-    message: str,
-    session_id: Optional[str] = None,
-) -> Message:
-    """构建 TUI_TOAST 消息 — 通知提示
-
-    Args:
-        level: 通知级别 (info/success/warning/error)
-        message: 通知文本
-        session_id: 会话 ID
-    """
-    return Message(
-        msg_type=MessageType.TUI_TOAST,
-        source="system",
-        target="tui",
-        payload={
-            "level": level,
-            "message": message,
-        },
-        session_id=session_id,
-    )
-
-
 def make_tui_status(
     key: str,
     value: str,
     session_id: Optional[str] = None,
 ) -> Message:
-    """构建 TUI_STATUS 消息 — 状态栏更新
+    """构建 TUI_STATUS 消息 — 状态信息显示
 
     Args:
-        key: 状态键 (memory/model/session)
+        key: 状态键 (如 'memory')
         value: 状态值
         session_id: 会话 ID
     """
     return Message(
         msg_type=MessageType.TUI_STATUS,
-        source="system",
+        source="memory_agent",
         target="tui",
-        payload={
-            "key": key,
-            "value": value,
-        },
+        payload={"key": key, "value": value},
         session_id=session_id,
     )

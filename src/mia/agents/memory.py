@@ -203,6 +203,17 @@ class MemoryAgent(BaseAgent):
             self.provider.__class__.__name__,
         )
 
+        # 通知 TUI 记忆状态
+        try:
+            if self.bus:
+                asyncio.ensure_future(
+                    self.bus.publish(
+                        make_tui_status("memory", f"持久:{self.store.count} 临时:{len(self._working_memory)}")
+                    )
+                )
+        except Exception:
+            pass
+
     async def handle(self, msg: Message) -> None:
         """消息分发 — 处理 USER_INTENT 和 CONVERSATION_DONE"""
         if msg.msg_type == MessageType.USER_INTENT:
@@ -294,17 +305,6 @@ class MemoryAgent(BaseAgent):
         else:
             print(f"   \033[90m└─\033[0m 无对话历史")
         print()
-
-        # 更新 TUI 状态栏 (如已连接)
-        try:
-            import asyncio
-            asyncio.ensure_future(self.bus.publish(make_tui_status(
-                key="memory",
-                value=f"临时:{len(self._working_memory)} 持久:{self.store.count} 历史:{len(self._conversation_history)}",
-                session_id=session_id,
-            )))
-        except Exception:
-            pass
 
         # ─── 构造转发消息 ─────────────────────────
         payload = dict(msg.payload)
@@ -437,17 +437,6 @@ class MemoryAgent(BaseAgent):
                 len(self._working_memory), self.MAX_WORKING_ENTRIES,
             )
             await self._consolidate_daily()
-
-        # 更新 TUI 状态栏
-        try:
-            import asyncio as _asyncio
-            _asyncio.ensure_future(self.bus.publish(make_tui_status(
-                key="memory",
-                value=f"临时:{len(self._working_memory)} 持久:{self.store.count}",
-                session_id=session_id,
-            )))
-        except Exception:
-            pass
 
         # ─── 4. 清理暂存 ───────────────────────────
         self._pending_intent = None

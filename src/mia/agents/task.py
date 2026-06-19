@@ -25,7 +25,6 @@ from mia.bus.message import (
     make_task_error,
     make_task_result,
     make_tui_tool,
-    make_tui_toast,
 )
 from mia.providers.base import BaseProvider
 from mia.tools.base import Tool, ToolResult
@@ -232,15 +231,14 @@ class TaskAgent(BaseAgent):
                 # 执行工具
                 print(f"   \033[90m├─\033[0m 调用工具: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})")
 
-                # 通知 TUI 工具调用开始
+                # 通知 TUI 工具开始执行
                 try:
-                    await self.bus.publish(make_tui_tool(
-                        tool_name=tool_name,
-                        tool_args=json.dumps(tool_args, ensure_ascii=False),
-                        result="",
-                        status="running",
-                        session_id=self._session_id,
-                    ))
+                    if self.bus:
+                        asyncio.ensure_future(
+                            self.bus.publish(
+                                make_tui_tool(tool_name, json.dumps(tool_args, ensure_ascii=False), status="running")
+                            )
+                        )
                 except Exception:
                     pass
 
@@ -259,15 +257,16 @@ class TaskAgent(BaseAgent):
                     "output": str(result.data) if result.data else result.error,
                 })
 
-                # 通知 TUI 工具调用结果
+                # 通知 TUI 工具执行结果
                 try:
-                    await self.bus.publish(make_tui_tool(
-                        tool_name=tool_name,
-                        tool_args=json.dumps(tool_args, ensure_ascii=False),
-                        result=str(result.data)[:500] if result.success else (result.error or "")[:500],
-                        status="success" if result.success else "error",
-                        session_id=self._session_id,
-                    ))
+                    if self.bus:
+                        output_brief = str(result.data)[:200] if result.data else result.error or ""
+                        status = "success" if result.success else "error"
+                        asyncio.ensure_future(
+                            self.bus.publish(
+                                make_tui_tool(tool_name, "", output_brief, status=status)
+                            )
+                        )
                 except Exception:
                     pass
 
