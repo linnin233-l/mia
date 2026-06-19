@@ -119,7 +119,6 @@ class MiaTuiApp:
 
     def _build_app(self) -> Application:
         """构建 prompt_toolkit Application 实例"""
-        kb = self._create_keybindings()
 
         # ─── 输出区域 (可滚动) ─────────────────────────────
         self._output_control = FormattedTextControl(
@@ -191,6 +190,9 @@ class MiaTuiApp:
         ])
 
         layout = Layout(root_container)
+
+        # keybindings 必须在 output_window 创建之后 (引用了 self._output_window)
+        kb = self._create_keybindings()
 
         app = Application(
             layout=layout,
