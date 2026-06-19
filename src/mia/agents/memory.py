@@ -857,7 +857,10 @@ class MemoryAgent(BaseAgent):
         )
 
         if not summary:
-            raise RuntimeError("压缩知识失败: 主备 Provider 均不可用")
+            # LLM 摘要失败，但知识已通过 _consolidate_daily 持久化
+            # 不抛异常，返回降级消息
+            current_count = self.store.count
+            return f"LLM 摘要生成失败，知识已持久化 (共 {current_count} 条)"
 
         original_count = self.store.count
         self.store.compact(summary.strip(), source_session_ids=None)
