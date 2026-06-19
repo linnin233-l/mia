@@ -412,7 +412,7 @@ class SchedulerAgent(BaseAgent):
                 # 如果 decision JSON 中没有 message (不太可能但做 fallback)
                 if not message:
                     message = await self._generate_fallback_reply(trigger_msg)
-                self._print_thought("决策: 语音回复用户", message[:100])
+                self._print_thought("决策: 语音回复用户", reasoning)
                 voice = detail.get("voice", "冰糖")
                 await self.send(make_send_voice(
                     message=message,
@@ -421,13 +421,13 @@ class SchedulerAgent(BaseAgent):
                 ))
             elif self.enable_streaming:
                 # 文字回复：流式输出！
-                self._print_thought("决策: 流式回复用户", "")
+                self._print_thought("决策: 流式回复用户", reasoning)
                 await self._stream_reply(trigger_msg)
             else:
                 # 文字回复：流式关闭 → 非流式 fallback
                 if not message:
                     message = await self._generate_fallback_reply(trigger_msg)
-                self._print_thought("决策: 回复用户", message[:100])
+                self._print_thought("决策: 回复用户", reasoning)
                 await self.send(make_send_text(
                     message=message,
                     session_id=self._session_id,
@@ -442,7 +442,7 @@ class SchedulerAgent(BaseAgent):
             # 检查重复任务
             if task in self._task_history:
                 logger.warning("[Scheduler] 检测到重复任务: {}", task)
-                self._print_thought("检测到重复任务，跳过", task)
+                self._print_thought("检测到重复任务，跳过", f"任务: {task}\n理由: {reasoning}")
                 # 不真正执行，而是模拟一个结果继续循环
                 fake_result = Message(
                     msg_type=MessageType.TASK_RESULT,
@@ -462,7 +462,7 @@ class SchedulerAgent(BaseAgent):
 
             self._print_thought(
                 f"决策: 执行任务 (第{self._consecutive_tasks}次)",
-                task,
+                f"理由: {reasoning}\n任务: {task}",
             )
 
             task_msg = make_execute_task(
@@ -477,7 +477,7 @@ class SchedulerAgent(BaseAgent):
         elif action == "done":
             # 标记完成
             logger.info("[Scheduler] 对话完成, action=done")
-            self._print_thought("任务完成", "")
+            self._print_thought("任务完成", reasoning)
 
         else:
             logger.warning("[Scheduler] 未知 action: {}, 降级为 reply", action)
