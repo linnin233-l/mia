@@ -103,6 +103,19 @@ async def run_agent_pipeline(
     bus = MessageBus(max_queue_size=100)
     await bus.start()
 
+    # ─── 总线记忆镜像 ──────────────────────────────
+    _mirror_types = [
+        MessageType.USER_INTENT,
+        MessageType.SEND_TEXT,
+        MessageType.STREAM_END,
+        MessageType.EXECUTE_TASK,
+        MessageType.TASK_RESULT,
+        MessageType.TASK_ERROR,
+        MessageType.CONVERSATION_DONE,
+    ]
+    for mt in _mirror_types:
+        bus.subscribe_mirror(mt, "memory_agent")
+
     # ─── 2. 初始化 Provider ───────────────────────────
     mimo = MiMoProvider(api_key=config.mimo.api_key)
     deepseek = DeepSeekProvider(api_key=config.deepseek.api_key)
@@ -139,8 +152,7 @@ async def run_agent_pipeline(
         fallback_model=config.deepseek.chat_model,
     )
 
-    # WeChatAgent — 微信通信渠道 (可选)
-    wechat_agent = None
+    # WeChat 通信渠道 (可选) — 收发分离
     if enable_wechat:
         wechat_receiver = WeChatReceiverAgent(
             bus=bus,
@@ -394,18 +406,26 @@ async def run_cli_interactive(enable_wechat: bool = False) -> None:
         fallback_model=config.deepseek.chat_model,
     )
 
-    # WeChatAgent — 微信通信渠道 (可选)
-    wechat_agent = None
+    # WeChat 通信渠道 (可选) — 收发分离
+    wechat_receiver = None
+    wechat_sender = None
     if enable_wechat:
-        wechat_agent = WeChatAgent(
+        wechat_receiver = WeChatReceiverAgent(
             bus=bus,
             bot_token=config.wechat.bot_token,
             bot_token_file=config.wechat.bot_token_file,
             base_url=config.wechat.base_url,
             enabled=True,
             media_dir=config.wechat.media_dir,
-            mimo=mimo,                                # TTS 语音合成
-            workspace_dir=config.agent.workspace_dir,  # TTS 音频输出
+        )
+        wechat_sender = WeChatSenderAgent(
+            bus=bus,
+            bot_token=config.wechat.bot_token,
+            bot_token_file=config.wechat.bot_token_file,
+            base_url=config.wechat.base_url,
+            enabled=True,
+            mimo=mimo,
+            workspace_dir=config.agent.workspace_dir,
         )
 
     # 启动所有 Agent
@@ -424,7 +444,7 @@ async def run_cli_interactive(enable_wechat: bool = False) -> None:
     await scheduler.start()
     await sender.start()
     await task_agent.start()
-    if wechat_agent:
+    if enable_wechat:
         await wechat_receiver.start()
         await wechat_sender.start()
 
