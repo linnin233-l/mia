@@ -1,6 +1,6 @@
 {
   "date": "2026-06-19",
-  "updated": "2026-06-19T20:56:10.061654+08:00",
+  "updated": "2026-06-19T21:06:06.010381+08:00",
   "entries": [
     {
       "id": "030cd8369447",
@@ -14,6 +14,49 @@
       "source_sessions": [],
       "created_at": "2026-06-19T20:56:10.061654+08:00",
       "updated_at": "2026-06-19T20:56:10.061654+08:00"
+    },
+    {
+      "id": "3f7f0d4f2d75",
+      "content": "用户 linnin233 正在开发一个名为 MIA 的多 Agent 系统，技术栈是 Python + asyncio，环境为 Windows。用户的交互偏好是使用纯中文，避免中英夹杂。",
+      "category": "preference",
+      "confidence": 0.8,
+      "keywords": [
+        "linnin233",
+        "MIA",
+        "多Agent系统",
+        "Python",
+        "asyncio",
+        "Windows",
+        "语言偏好",
+        "纯中文"
+      ],
+      "importance": 0.9,
+      "source_sessions": [
+        "38749d0df2e9"
+      ],
+      "created_at": "2026-06-19T21:06:06.006443+08:00",
+      "updated_at": "2026-06-19T21:06:06.006443+08:00"
+    },
+    {
+      "id": "c417b7711b49",
+      "content": "MIA（模块化智能助手）是一个基于多Agent架构的AI系统。其核心设计包括消息总线、异步调度和跨对话记忆。系统通过接收器、记忆系统、调度器和执行器等模块协作，将用户任务分解并分派给专业模块处理，最终整合结果，以提供个性化、连贯的交互体验。",
+      "category": "fact",
+      "confidence": 0.9,
+      "keywords": [
+        "MIA",
+        "模块化智能助手",
+        "多Agent架构",
+        "消息总线",
+        "异步调度",
+        "跨对话记忆",
+        "任务分解"
+      ],
+      "importance": 0.8,
+      "source_sessions": [
+        "wechat:o9cq80yk-Gu-y17ZzF_XdZyL9QO0@im.wechat"
+      ],
+      "created_at": "2026-06-19T21:06:06.010381+08:00",
+      "updated_at": "2026-06-19T21:06:06.010381+08:00"
     }
   ]
 }

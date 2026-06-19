@@ -123,11 +123,25 @@ class MemoryBrowser:
         """
         import questionary
 
-        # ─── 1. 全量加载所有持久知识 ─────────────────
-        self._all_entries = self.store.get_all()
-        self._id_map = {e.id: e for e in self._all_entries}
+        # ─── 1. 全量加载，按日期分组 ─────────────────
+        self._all_entries = []
+        self._id_map = {}
+        # 日期顺序 (按日期降序，最新的在前)
+        dates = sorted(self.store.get_index_summaries().keys(), reverse=True)
+        for date in dates:
+            day_entries = self.store.load_day(date)
+            self._all_entries.extend(day_entries)
+        for e in self._all_entries:
+            self._id_map[e.id] = e
+
         total_persistent = len(self._all_entries)
         total_working = len(self.working_entries)
+
+        # 构建 entry → date 映射 (用于显示日期分组)
+        entry_date: dict[str, str] = {}
+        for date in dates:
+            for e in self.store.load_day(date):
+                entry_date[e.id] = date
 
         # ─── 2. 展示临时记忆 ─────────────────────────
         if self.working_entries:
@@ -158,12 +172,23 @@ class MemoryBrowser:
             page_entries = self._all_entries[start:end]
 
             choices = []
+            last_date = ""
             for i, entry in enumerate(page_entries):
+                date = entry_date.get(entry.id, "")
+                # 日期切换时插入日期分隔行
+                if date and date != last_date:
+                    last_date = date
+                    # 该日期在当天所有条目中的位置
+                    day_total = sum(1 for e in self._all_entries if entry_date.get(e.id) == date)
+                    choices.append(questionary.Separator(
+                        f"─ {date} ({day_total}条) ─"
+                    ))
+
                 cat = entry.category_label
                 preview = entry.content.replace("\n", " ")[:120]
                 if len(entry.content) > 120:
                     preview += "..."
-                label = f"{i+1:2d}. {cat} {preview}"
+                label = f"  {cat}  {preview}"
                 choices.append(questionary.Choice(title=label, value=entry.id))
 
             # 翻页选项
@@ -275,8 +300,15 @@ class MemoryBrowser:
         interactive = _is_interactive()
         loop = asyncio.get_event_loop()
 
-        # 全量加载
-        all_persistent = self.store.get_all()
+        # 全量加载，按日期分组
+        all_persistent = []
+        dates = sorted(self.store.get_index_summaries().keys(), reverse=True)
+        entry_date: dict[str, str] = {}
+        for date in dates:
+            day_entries = self.store.load_day(date)
+            for e in day_entries:
+                entry_date[e.id] = date
+            all_persistent.extend(day_entries)
         persistent_total = len(all_persistent)
         working_total = len(self.working_entries)
         total = persistent_total + working_total
@@ -299,14 +331,23 @@ class MemoryBrowser:
             end = min(start + self.PAGE_SIZE, total)
             print(f"  \033[1m── 第{page+1}/{total_pages}页 ({start+1}-{end}条) ──\033[0m")
 
+            last_date = ""
             for i in range(start, end):
                 entry = all_entries[i]
                 idx = i + 1
+                is_temp = i < working_total
+                date = entry_date.get(entry.id, "") if not is_temp else ""
+
+                # 日期切换
+                if date and date != last_date:
+                    last_date = date
+                    day_total = sum(1 for e in all_persistent if entry_date.get(e.id) == date)
+                    print(f"  \033[33m{date}\033[0m ({day_total}条)")
+
                 cat = entry.category_label
                 preview = entry.content.replace("\n", " ")[:150]
                 if len(entry.content) > 150:
                     preview += "..."
-                is_temp = i < working_total
                 tag = " \033[93m[临时]\033[0m" if is_temp else ""
                 print(f"  \033[90m[{idx}]\033[0m {cat} {preview} \033[90m({entry.confidence:.1f})\033[0m{tag}")
 
