@@ -10,6 +10,7 @@ TaskAgent 自己也是一个小的 LLM 循环，但它只关心"怎么做"，
 不像 Scheduler 关心"做什么"。
 """
 
+import asyncio
 import json
 import re
 from datetime import datetime, timezone, timedelta
@@ -24,6 +25,7 @@ from mia.bus.message import (
     MessageType,
     make_task_error,
     make_task_result,
+    make_tui_thought,
     make_tui_tool,
 )
 from mia.providers.base import BaseProvider
@@ -139,6 +141,18 @@ class TaskAgent(BaseAgent):
             print(f"   \033[90m├─\033[0m 任务: {task}")
             if tools_hint:
                 print(f"   \033[90m├─\033[0m 建议工具: {', '.join(tools_hint)}")
+
+        # TUI 模式: 发布收到任务思考
+        if is_tui:
+            try:
+                if self.bus:
+                    asyncio.ensure_future(
+                        self.bus.publish(
+                            make_tui_thought("task_agent", "收到任务", task[:200])
+                        )
+                    )
+            except Exception:
+                pass
 
         logger.info("[TaskAgent] 开始执行任务: {}", task)
 

@@ -426,6 +426,8 @@ class MiaTuiApp:
         mt = msg.msg_type
 
         if mt == MessageType.STREAM_START:
+            # SenderAgent 在 TUI 模式下不存在，TUI 补上 sender 头
+            self._add_message("thought", "  [sender] 输出回复")
             self._add_stream_start()
 
         elif mt == MessageType.STREAM_CHUNK:
@@ -439,6 +441,8 @@ class MiaTuiApp:
             asyncio.ensure_future(self._publish_conversation_done(full_message, msg.session_id))
 
         elif mt == MessageType.SEND_TEXT:
+            # 非流式 fallback: 补 sender 头
+            self._add_message("thought", "  [sender] 输出回复")
             message = msg.payload.get("message", "")
             self._add_message("mia", f"MIA: {message}")
             asyncio.ensure_future(self._publish_conversation_done(message, msg.session_id))

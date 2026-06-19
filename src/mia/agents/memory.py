@@ -30,7 +30,7 @@ from loguru import logger
 
 from mia.agents.base import BaseAgent
 from mia.bus.bus import MessageBus
-from mia.bus.message import Message, MessageType, make_tui_status
+from mia.bus.message import Message, MessageType, make_tui_status, make_tui_thought
 from mia.memory.store import (
     KnowledgeEntry,
     MemoryStore,
@@ -307,6 +307,24 @@ class MemoryAgent(BaseAgent):
             else:
                 print(f"   \033[90m└─\033[0m 无对话历史")
             print()
+
+        # TUI 模式: 发布思考过程到聊天区
+        if get_config().agent.tui_active:
+            try:
+                if self.bus:
+                    parts = [
+                        f"意图: {intent[:80]}",
+                        f"持久:{self.store.count} 临时:{len(self._working_memory)} 历史:{len(self._conversation_history)}轮",
+                    ]
+                    if knowledge_text:
+                        parts.append(f"知识注入: {knowledge_text[:120]}")
+                    asyncio.ensure_future(
+                        self.bus.publish(
+                            make_tui_thought("memory_agent", "检索记忆", " | ".join(parts))
+                        )
+                    )
+            except Exception:
+                pass
 
         # ─── 构造转发消息 ─────────────────────────
         payload = dict(msg.payload)
