@@ -746,15 +746,27 @@ class WeChatAgent(BaseAgent):
                         audio_path = await self._download_media(
                             client,
                             aes_key,
-                            "voice.wav",
+                            "voice.silk",  # iLink 语音是 SILK 编码
                             encrypt_query_param=encrypt_query_param,
                         )
                         if audio_path:
-                            voice_paths.append(audio_path)
-                            logger.info(
-                                "[WeChatAgent] 语音音频已下载: %s",
-                                audio_path,
-                            )
+                            # ─── SILK → WAV 转码 ──────────
+                            # iLink 语音是 SILK V3 编码（微信私有格式），
+                            # MiMo-V2.5 只支持 mp3/flac/m4a/wav/ogg，
+                            # 需要先转码才能做多模态理解
+                            converted = await self._convert_to_wav(audio_path)
+                            if converted:
+                                voice_paths.append(converted)
+                                logger.info(
+                                    "[WeChatAgent] 语音已转为 WAV: %s",
+                                    converted,
+                                )
+                            else:
+                                # 转码失败 → 保留 ASR 文本，放弃音频理解
+                                logger.warning(
+                                    "[WeChatAgent] SILK 转码失败，"
+                                    "仅使用 ASR 文本"
+                                )
                     if not asr_text and not voice_paths:
                         text_parts.append("[语音: 无转写]")
 
@@ -1099,6 +1111,84 @@ class WeChatAgent(BaseAgent):
                 "wechat _download_media failed"
             )
             return None
+
+    # ─── SILK → WAV 转码 ────────────────────────────
+
+    async def _convert_to_wav(self, file_path: str) -> Optional[str]:
+        """将 SILK 音频转为 WAV 格式（MiMo 支持的格式）
+
+        iLink 语音消息使用 SILK V3 编码（微信私有格式），
+        MiMo-V2.5 只接受 mp3/flac/m4a/wav/ogg。
+        优先使用 ffmpeg 转码。
+
+        Args:
+            file_path: SILK 音频文件路径
+
+        Returns:
+            WAV 文件路径，失败返回 None
+        """
+        import subprocess
+
+        silk_path = Path(file_path)
+        if not silk_path.exists():
+            return None
+
+        # 检查是否是 SILK 格式（magic bytes: #!SILK 或 SILK_V3）
+        try:
+            head = silk_path.read_bytes()[:16]
+            if not (b"SILK" in head or b"#!SILK" in head):
+                # 不是 SILK，可能已经是 WAV 或其他格式，直接返回
+                logger.debug(
+                    "[WeChatAgent] 音频非 SILK 格式，跳过转码: head=%s",
+                    head[:8].hex(),
+                )
+                return file_path
+        except Exception:
+            return None
+
+        # 尝试 ffmpeg 转码
+        wav_path = silk_path.with_suffix(".wav")
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", str(silk_path),
+                    "-ar", "24000",   # 24kHz 采样率（微信 SILK 原生）
+                    "-ac", "1",       # 单声道
+                    "-f", "wav",      # WAV 容器
+                    str(wav_path),
+                ],
+                capture_output=True,
+                timeout=30,
+            )
+            if result.returncode == 0 and wav_path.exists():
+                logger.info(
+                    "[WeChatAgent] SILK→WAV 转码成功: %s → %s (%d bytes)",
+                    silk_path.name, wav_path.name,
+                    wav_path.stat().st_size,
+                )
+                # 清理原始 SILK 文件
+                try:
+                    silk_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return str(wav_path)
+            else:
+                stderr = result.stderr.decode(errors="replace")[:200]
+                logger.warning(
+                    "[WeChatAgent] ffmpeg 转码失败: rc=%d stderr=%s",
+                    result.returncode, stderr,
+                )
+        except FileNotFoundError:
+            logger.warning(
+                "[WeChatAgent] ffmpeg 未安装，无法转码 SILK→WAV"
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("[WeChatAgent] ffmpeg 转码超时")
+        except Exception:
+            logger.exception("[WeChatAgent] ffmpeg 转码异常")
+
+        return None
 
     # ─── 跨线程调度 ────────────────────────────────────
 
