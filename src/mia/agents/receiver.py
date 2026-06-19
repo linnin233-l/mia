@@ -97,6 +97,10 @@ class ReceiverAgent(BaseAgent):
 
         full_intent = "\n".join(intent_parts)
 
+        # 透传微信渠道的 context_token 和 to_user_id（如果有）
+        context_token = msg.payload.get("context_token", "")
+        to_user_id = msg.payload.get("to_user_id", "")
+
         # 结构化展示
         from mia.config import get_config
         verbose = get_config().agent.verbose
@@ -109,12 +113,14 @@ class ReceiverAgent(BaseAgent):
                 print(f"   \033[90m├─\033[0m 语音: {voice_path}")
             print(f"   \033[90m└─\033[0m 意图: {full_intent}")
 
-        # 发送到 Scheduler
+        # 发送到 MemoryAgent → Scheduler（透传渠道元数据）
         intent_msg = make_user_intent(
             original=text or "",
             intent=full_intent,
             media_refs=media_refs,
             session_id=session_id,
+            context_token=context_token,
+            to_user_id=to_user_id,
         )
         await self.send(intent_msg)
         logger.info("[Receiver] USER_INTENT 已发送, intent_len={}", len(full_intent))

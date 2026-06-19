@@ -5,12 +5,14 @@
 使用长轮询接收消息、HTTP 发送消息、QR 码扫码登录。
 
 组件:
+  - receiver.py: WeChatReceiverAgent — 入站长轮询 + SILK 解码
+  - sender.py: WeChatSenderAgent — 出站消息发送 (TTS + CDN)
   - client.py: ILinkClient — iLink HTTP API 异步客户端
   - utils.py: AES-128-ECB 加解密 + 请求头生成
-  - agent.py: WeChatAgent — MIA 消息总线和微信之间的桥接 Agent
 """
 
 from mia.channels.wechat.client import ILinkClient
-from mia.channels.wechat.agent import WeChatAgent
+from mia.channels.wechat.receiver import WeChatReceiverAgent
+from mia.channels.wechat.sender import WeChatSenderAgent
 
-__all__ = ["ILinkClient", "WeChatAgent"]
+__all__ = ["ILinkClient", "WeChatReceiverAgent", "WeChatSenderAgent"]

@@ -1,25 +1,15 @@
 # -*- coding: utf-8 -*-
-"""WeChatAgent — 微信通信渠道桥接 Agent
+"""WeChatReceiverAgent — 微信入站消息接收 Agent（纯接收，不处理输出）
 
-WeChatAgent 是 MIA 消息总线和微信 iLink Bot API 之间的桥梁。
+职责（只负责入站）:
+  1. 后台线程长轮询 iLink API 获取新消息
+  2. SILK → WAV 转换（通过 pilk 解码）
+  3. 发布 RAW_INPUT 到 MessageBus，payload 中携带 context_token 和 to_user_id
 
-职责:
-  入站（微信 → MIA）:
-    1. 后台线程长轮询 iLink API 获取新消息
-    2. 将微信消息转为 RAW_INPUT 发布到 MessageBus
-    3. 支持文本和图片消息（后续可扩展语音/视频）
-
-  出站（MIA → 微信）:
-    4. 监听总线上的 SEND_TEXT / STREAM_* 输出消息
-    5. 将回复文本发送给微信用户
-
-认证:
-  - 优先使用配置的 bot_token
-  - 无 token 时自动启动 QR 码扫码登录
-  - Token 持久化到文件，下次启动自动加载
+不处理任何输出/发送 — 发送由 WeChatSenderAgent 负责。
 
 架构位置:
-  微信用户 ←→ (iLink API) ←→ WeChatAgent ←→ MessageBus ←→ MIA Agent 链路
+  微信用户  →  (iLink API)  →  WeChatReceiverAgent  →  MessageBus  →  MIA Agent 链路
 """
 
 from __future__ import annotations
@@ -53,10 +43,11 @@ _DEFAULT_TOKEN_FILE = Path.home() / ".mia" / "wechat_bot_token"
 _DEFAULT_CONTEXT_TOKENS_FILE = Path.home() / ".mia" / "wechat_context_tokens.json"
 
 
-class WeChatAgent(BaseAgent):
-    """微信渠道 Agent — 桥接 iLink Bot API 和 MIA MessageBus
+class WeChatReceiverAgent(BaseAgent):
+    """微信入站消息接收 Agent — 纯入站，不处理输出
 
-    作为 MIA 的输入/输出渠道之一，与 ReceiverAgent + SenderAgent 并行工作。
+    通过后台线程长轮询 iLink Bot API，接收微信消息并发布 RAW_INPUT。
+    只负责接收，不负责发送回复 — 发送由 WeChatSenderAgent 处理。
 
     Args:
         bus: MIA 消息总线
@@ -75,14 +66,11 @@ class WeChatAgent(BaseAgent):
         base_url: str = "",
         enabled: bool = True,
         media_dir: str = "",
-        mimo=None,  # MiMoProvider — 用于 TTS 语音合成
-        workspace_dir: str = "",  # TTS 音频临时输出目录
     ):
-        super().__init__(name="wechat", bus=bus)
+        super().__init__(name="wechat_receiver", bus=bus)
         self.enabled = enabled
         self.bot_token = bot_token
         self._base_url = base_url or "https://ilinkai.weixin.qq.com"
-        self._mimo = mimo  # 可选: 用于合成语音回复
 
         # Token 文件和媒体目录
         self._bot_token_file = (
@@ -98,13 +86,6 @@ class WeChatAgent(BaseAgent):
             if media_dir
             else Path.home() / ".mia" / "media"
         )
-        # TTS 音频输出目录
-        self._workspace_dir = (
-            Path(workspace_dir).expanduser()
-            if workspace_dir
-            else Path.home() / ".mia" / "workspace"
-        )
-        self._workspace_dir.mkdir(parents=True, exist_ok=True)
 
         # ILinkClient 实例（延迟创建，在 start() 中初始化）
         self._client = None  # type: Optional[ILinkClient]
@@ -127,22 +108,19 @@ class WeChatAgent(BaseAgent):
         self._text_dedup: OrderedDict[str, float] = OrderedDict()
 
         # ─── 用户状态缓存 ────────────────────────────
-        # 缓存每个用户最近一次的 context_token（用于主动发送）
+        # 缓存每个用户最近一次的 context_token（用于 WeChatSenderAgent 路由回复）
         self._user_context_tokens: Dict[str, str] = {}
 
-        # 当前活跃对话的元数据（用于路由回复）
-        # session_id → {to_user_id, context_token, ...}
+        # 当前活跃对话的元数据（session_id → {to_user_id, context_token, ...}）
+        # WeChatSenderAgent 会读取此缓存来确定回复路由
         self._active_sessions: Dict[str, Dict[str, Any]] = {}
-
-        # 流式回复缓冲（session_id → 累积文本）
-        self._stream_buffers: Dict[str, str] = {}
 
     # ─── 生命周期 ──────────────────────────────────────
 
     async def on_start(self) -> None:
         """Agent 启动 — 尝试加载 token，初始化客户端，启动后台轮询"""
         if not self.enabled:
-            logger.info("[WeChatAgent] 渠道已禁用，跳过初始化")
+            logger.info("[WeChatReceiverAgent] 渠道已禁用，跳过初始化")
             return
 
         # 1. 尝试从文件加载 token
@@ -163,16 +141,16 @@ class WeChatAgent(BaseAgent):
 
         # 4. 如果没有 token，执行 QR 码登录
         if not self.bot_token:
-            logger.info("[WeChatAgent] 无 bot_token，启动 QR 码登录...")
+            logger.info("[WeChatReceiverAgent] 无 bot_token，启动 QR 码登录...")
             success = await self._do_qrcode_login()
             if not success:
-                logger.error("[WeChatAgent] QR 码登录失败，微信渠道不可用")
+                logger.error("[WeChatReceiverAgent] QR 码登录失败，微信渠道不可用")
                 self.enabled = False
                 return
 
         # 5. 启动后台长轮询线程
         self._start_poll_thread()
-        logger.info("[WeChatAgent] 微信渠道已就绪 ✓")
+        logger.info("[WeChatReceiverAgent] 微信接收渠道已就绪 ✓")
 
     async def on_stop(self) -> None:
         """Agent 停止 — 关闭轮询线程和 HTTP 客户端"""
@@ -189,287 +167,23 @@ class WeChatAgent(BaseAgent):
             await self._client.stop()
             self._client = None
 
-        logger.info("[WeChatAgent] 微信渠道已停止")
+        logger.info("[WeChatReceiverAgent] 微信接收渠道已停止")
 
     async def handle(self, msg: Message) -> None:
-        """处理来自 MessageBus 的输出消息
+        """处理消息总线消息 — Receiver 不处理输出消息，仅做日志记录
 
-        监听 Scheduler 发来的输出消息，转发给微信用户:
-          - SEND_TEXT: 纯文本回复
-          - STREAM_START/CHUNK/END: 流式回复
-          - SEND_VOICE: 语音回复（微信暂不支持语音发送，降级为文本）
+        WeChatReceiverAgent 是纯入站 Agent，不负责发送回复。
+        所有 SEND_TEXT / SEND_VOICE / STREAM_* 输出由 WeChatSenderAgent 处理。
         """
         if not self.enabled:
             return
 
-        if msg.msg_type == MessageType.SEND_TEXT:
-            await self._handle_output_text(msg)
-        elif msg.msg_type == MessageType.STREAM_START:
-            await self._handle_stream_start(msg)
-        elif msg.msg_type == MessageType.STREAM_CHUNK:
-            await self._handle_stream_chunk(msg)
-        elif msg.msg_type == MessageType.STREAM_END:
-            await self._handle_stream_end(msg)
-        elif msg.msg_type == MessageType.SEND_VOICE:
-            # 微信渠道: 生成 TTS 语音 → 上传 CDN → 发送语音消息
-            await self._handle_output_voice(msg)
-
-    # ─── 输出处理 ──────────────────────────────────────
-
-    async def _handle_output_text(self, msg: Message) -> None:
-        """处理文本输出 — 直接发送到微信用户，然后发布 CONVERSATION_DONE"""
-        message = msg.payload.get("message", "")
-        if message:
-            await self._send_to_user(msg.session_id, message)
-            print(f"\033[32m[WeChatAgent]\033[0m 文本已发送 ({len(message)}字)")
-        # 发布 CONVERSATION_DONE → MemoryAgent 存储记忆
-        await self._publish_conversation_done(msg, message)
-
-    async def _handle_stream_start(self, msg: Message) -> None:
-        """流式开始 — 初始化缓冲"""
-        sid = msg.session_id or ""
-        self._stream_buffers[sid] = ""
-
-    async def _handle_stream_chunk(self, msg: Message) -> None:
-        """流式增量 — 累积文本"""
-        sid = msg.session_id or ""
-        delta = msg.payload.get("delta", "")
-        if sid in self._stream_buffers:
-            self._stream_buffers[sid] += delta
-
-    async def _handle_stream_end(self, msg: Message) -> None:
-        """流式结束 — 发送完整文本到微信，然后发布 CONVERSATION_DONE"""
-        sid = msg.session_id or ""
-        full_text = msg.payload.get("message", "")
-
-        # 从缓冲获取完整文本（优先使用 payload 中的完整文本）
-        if not full_text and sid in self._stream_buffers:
-            full_text = self._stream_buffers.pop(sid, "")
-        elif sid in self._stream_buffers:
-            del self._stream_buffers[sid]
-
-        if full_text:
-            await self._send_to_user(sid, full_text)
-            print(f"\033[32m[WeChatAgent]\033[0m 流式文本已发送 ({len(full_text)}字)")
-        # 发布 CONVERSATION_DONE → MemoryAgent 存储记忆
-        await self._publish_conversation_done(msg, full_text)
-
-    async def _handle_output_voice(self, msg: Message) -> None:
-        """处理语音输出 — TTS 合成 → 上传 CDN → 发送到微信
-
-        流程:
-          1. 从 SEND_VOICE payload 获取文本
-          2. 调用 MiMo TTS 生成 WAV 音频
-          3. 上传到微信 CDN（AES-128-ECB 加密）
-          4. 发送 file_item 消息（用户点击播放）
-          5. 同时发送文本作为 fallback
-        """
-        message = msg.payload.get("message", "")
-        voice = msg.payload.get("voice", "冰糖")
-        audio_format = msg.payload.get("format", "wav")
-        session_id = msg.session_id
-
-        # 解析目标微信用户
-        to_user_id = ""
-        context_token = ""
-        if session_id and session_id in self._active_sessions:
-            meta = self._active_sessions[session_id]
-            to_user_id = meta.get("to_user_id", "")
-            context_token = meta.get("context_token", "")
-        if not context_token and to_user_id:
-            context_token = self._user_context_tokens.get(to_user_id, "")
-
-        if not to_user_id or not message:
-            print(f"\033[33m[WeChatAgent]\033[0m SEND_VOICE 缺少 to_user_id={to_user_id[:20] if to_user_id else 'EMPTY'} msg_len={len(message)}")
-            return
-
-        print(f"\033[36m[WeChatAgent]\033[0m → 语音发送 to={to_user_id[:20]} text_len={len(message)}")
-
-        audio_sent = False
-
-        # ─── 1. TTS 合成 ───────────────────────────────
-        if self._mimo:
-            try:
-                audio_bytes = await self._mimo.synthesize(
-                    text=message,
-                    voice=voice,
-                    audio_format=audio_format,
-                )
-
-                filename = f"wechat_voice_{msg.msg_id}.{audio_format}"
-                audio_path = self._workspace_dir / filename
-                audio_path.write_bytes(audio_bytes)
-                print(f"   \033[90m├─\033[0m TTS: {len(audio_bytes)} bytes → {audio_path}")
-
-                # ─── 2. 上传到 CDN ────────────────
-                print(f"   \033[90m├─\033[0m 上传 CDN...")
-                upload_result = await self._client.upload_media(
-                    str(audio_path),
-                    media_type=3,  # FILE
-                    to_user_id=to_user_id,
-                )
-                print(f"   \033[90m├─\033[0m CDN OK: rawsize={upload_result['rawsize']} filesize={upload_result['filesize']} enc_param={upload_result['encrypt_query_param'][:40]}...")
-
-                # ─── 3. 发送 file_item ────────────────
-                print(f"   \033[90m├─\033[0m 发送 file_item...")
-                file_msg = {
-                    "to_user_id": to_user_id,
-                    "client_id": str(uuid.uuid4()),
-                    "message_type": 2,
-                    "message_state": 2,
-                    "context_token": context_token,
-                    "item_list": [{
-                        "type": 4,
-                        "file_item": {
-                            "media": {
-                                "encrypt_query_param": upload_result["encrypt_query_param"],
-                                "aes_key": upload_result["aes_key_b64"],
-                                "encrypt_type": 1,
-                            },
-                            "file_name": f"mia_voice.{audio_format}",
-                            "len": str(upload_result["rawsize"]),
-                        },
-                    }],
-                }
-                resp = await self._client.sendmessage(file_msg)
-
-                ret = resp.get("ret", -1) if isinstance(resp, dict) else -1
-                errcode = resp.get("errcode", "?") if isinstance(resp, dict) else "?"
-                print(f"   \033[90m├─\033[0m 响应: ret={ret} errcode={errcode}")
-
-                # HTTP 200 = 成功（官方插件不检查 ret）
-                audio_sent = True
-                print(f"\033[32m   └─\033[0m 语音文件已发送 ✓")
-
-                # 清理临时文件
-                try:
-                    audio_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-            except Exception as e:
-                print(f"\033[31m   └─\033[0m 语音发送失败: {e}")
-                logger.exception("[WeChatAgent] 语音发送异常")
-        else:
-            print(f"   \033[33m└─\033[0m 无 MiMoProvider，跳过语音")
-
-        # ─── 4. 文本 fallback ───────────────────────────
-        prefix = "🎤 " if audio_sent else ""
-        await self._send_text_to_user(to_user_id, context_token, f"{prefix}{message}")
-
-        # ─── 5. 发布 CONVERSATION_DONE → MemoryAgent 存储记忆 ──
-        await self._publish_conversation_done(msg, message)
-
-    async def _publish_conversation_done(
-        self, msg: Message, message: str,
-    ) -> None:
-        """发布 CONVERSATION_DONE — 通知 MemoryAgent 和 main 本轮对话结束
-
-        模仿 SenderAgent 的行为：同时发给 "main" 和 "memory_agent"。
-        MemoryAgent 收到后会追加对话历史 + 提取 Level 1 临时知识。
-        """
-        await self.bus.publish(Message(
-            msg_type=MessageType.CONVERSATION_DONE,
-            source=self.name,
-            target="main",
-            payload={"message": message},
-            session_id=msg.session_id,
-        ))
-        await self.bus.publish(Message(
-            msg_type=MessageType.CONVERSATION_DONE,
-            source=self.name,
-            target="memory_agent",
-            payload={"message": message},
-            session_id=msg.session_id,
-        ))
-
-    async def _send_text_to_user(
-        self,
-        to_user_id: str,
-        context_token: str,
-        text: str,
-    ) -> None:
-        """发送文本到微信用户"""
-        if not self._client or not to_user_id or not text:
-            return
-        try:
-            resp = await self._client.send_text(
-                to_user_id, text, context_token,
-            )
-            ret = resp.get("ret", -1) if isinstance(resp, dict) else -1
-            if ret != 0:
-                logger.debug(
-                    "[WeChatAgent] send_text ret=%s", ret,
-                )
-        except Exception:
-            logger.exception(
-                "[WeChatAgent] 发送文本失败 to=%s",
-                to_user_id[:20],
-            )
-
-    async def _send_to_user(self, session_id: Optional[str], text: str) -> None:
-        """将文本发送到对应的微信用户
-
-        根据 session_id 查找对应的微信用户和 context_token，
-        通过 iLink API 发送文本消息。
-
-        Args:
-            session_id: MIA 会话 ID（格式: wechat:<user_id>）
-            text: 回复文本
-        """
-        if not self._client or not text:
-            return
-
-        # 解析 session_id 获取微信用户 ID
-        to_user_id = ""
-        context_token = ""
-
-        if session_id and session_id in self._active_sessions:
-            meta = self._active_sessions[session_id]
-            to_user_id = meta.get("to_user_id", "")
-            context_token = meta.get("context_token", "")
-
-        # 如果 session 元数据中没有 context_token，尝试从缓存获取
-        if not context_token and to_user_id:
-            context_token = self._user_context_tokens.get(to_user_id, "")
-
-        if not to_user_id:
-            logger.warning(
-                "[WeChatAgent] 无法确定微信接收者: session_id=%s",
-                session_id,
-            )
-            return
-
-        if not context_token:
-            logger.warning(
-                "[WeChatAgent] 无 context_token for user=%s，"
-                "消息可能发送失败",
-                to_user_id[:20],
-            )
-
-        try:
-            resp = await self._client.send_text(
-                to_user_id, text, context_token,
-            )
-            if isinstance(resp, dict):
-                ret = resp.get("ret", 0)
-                if ret != 0:
-                    logger.warning(
-                        "[WeChatAgent] send_text 被拒绝: "
-                        "ret=%s errcode=%s",
-                        ret,
-                        resp.get("errcode", ""),
-                    )
-            logger.info(
-                "[WeChatAgent] 已发送回复 to %s, len=%d",
-                to_user_id[:20],
-                len(text),
-            )
-        except Exception:
-            logger.exception(
-                "[WeChatAgent] 发送回复失败 to=%s",
-                to_user_id[:20],
-            )
+        logger.debug(
+            "[WeChatReceiverAgent] 收到消息但忽略（纯入站 Agent）: "
+            "msg_type=%s session=%s",
+            msg.msg_type.name,
+            msg.session_id,
+        )
 
     # ─── 长轮询（后台线程） ────────────────────────────
 
@@ -487,7 +201,7 @@ class WeChatAgent(BaseAgent):
             daemon=True,
         )
         self._poll_thread.start()
-        logger.info("[WeChatAgent] 长轮询线程已启动")
+        logger.info("[WeChatReceiverAgent] 长轮询线程已启动")
 
     def _run_poll_forever(self) -> None:
         """后台线程入口：在专用 event loop 中运行长轮询"""
@@ -502,9 +216,9 @@ class WeChatAgent(BaseAgent):
             self._poll_task = poll_loop.create_task(self._poll_loop_async())
             poll_loop.run_until_complete(self._poll_task)
         except asyncio.CancelledError:
-            logger.info("[WeChatAgent] 轮询任务已取消")
+            logger.info("[WeChatReceiverAgent] 轮询任务已取消")
         except Exception:
-            logger.exception("[WeChatAgent] 轮询线程异常")
+            logger.exception("[WeChatReceiverAgent] 轮询线程异常")
         finally:
             self._poll_task = None
             try:
@@ -719,12 +433,12 @@ class WeChatAgent(BaseAgent):
                             if converted:
                                 voice_paths.append(converted)
                                 logger.info(
-                                    "[WeChatAgent] 语音已转为 WAV: %s",
+                                    "[WeChatReceiverAgent] 语音已转为 WAV: %s",
                                     converted,
                                 )
                             else:
                                 logger.warning(
-                                    "[WeChatAgent] SILK 转码失败，"
+                                    "[WeChatReceiverAgent] SILK 转码失败，"
                                     "仅使用 ASR 文本"
                                 )
                     if not asr_text and not voice_paths:
@@ -762,7 +476,7 @@ class WeChatAgent(BaseAgent):
             else:
                 session_id = f"wechat:{from_user_id}" if from_user_id else ""
 
-            # 保存活跃会话元数据（用于后续回复路由）
+            # 保存活跃会话元数据（用于 WeChatSenderAgent 后续回复路由）
             if from_user_id and context_token:
                 self._active_sessions[session_id] = {
                     "to_user_id": from_user_id,
@@ -800,12 +514,14 @@ class WeChatAgent(BaseAgent):
                     image_paths=image_paths,
                     voice_paths=voice_paths,
                     session_id=session_id,
+                    context_token=context_token,
+                    to_user_id=from_user_id,
                 ),
                 description=f"publish RAW_INPUT for {session_id}",
             )
 
         except Exception:
-            logger.exception("[WeChatAgent] _on_message 失败")
+            logger.exception("[WeChatReceiverAgent] _on_message 失败")
 
     async def _publish_raw_input(
         self,
@@ -813,11 +529,27 @@ class WeChatAgent(BaseAgent):
         image_paths: List[str],
         voice_paths: List[str],
         session_id: str,
+        context_token: str,
+        to_user_id: str,
     ) -> None:
-        """在主事件循环中发布 RAW_INPUT 消息到总线"""
+        """在主事件循环中发布 RAW_INPUT 消息到总线
+
+        payload 中携带 context_token 和 to_user_id，
+        供 WeChatSenderAgent 在收到回复时路由到正确的微信用户。
+
+        Args:
+            user_input: 用户文本输入
+            image_paths: 图片文件路径列表
+            voice_paths: 语音文件路径列表
+            session_id: MIA 会话 ID
+            context_token: iLink API context_token（用于发送回复）
+            to_user_id: 发送者微信用户 ID（用于回复路由）
+        """
         payload: Dict[str, Any] = {
             "text": user_input,
             "source": "wechat",
+            "context_token": context_token,
+            "to_user_id": to_user_id,
         }
 
         if image_paths:
@@ -1110,7 +842,7 @@ class WeChatAgent(BaseAgent):
             wav_path.write_bytes(bytes(wav))
 
             logger.info(
-                "[WeChatAgent] SILK→WAV: %s → %s (%d bytes, %.1fs)",
+                "[WeChatReceiverAgent] SILK→WAV: %s → %s (%d bytes, %.1fs)",
                 silk_path.name, wav_path.name,
                 len(wav), float(duration_s or 0) / 1000,
             )
@@ -1121,9 +853,9 @@ class WeChatAgent(BaseAgent):
             return str(wav_path)
 
         except ImportError:
-            logger.warning("[WeChatAgent] pilk 未安装，pip install pilk")
+            logger.warning("[WeChatReceiverAgent] pilk 未安装，pip install pilk")
         except Exception as e:
-            logger.warning("[WeChatAgent] pilk 解码失败: %s", e)
+            logger.warning("[WeChatReceiverAgent] pilk 解码失败: %s", e)
 
         return None
 

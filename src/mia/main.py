@@ -40,7 +40,8 @@ from mia.agents.sender import SenderAgent
 from mia.agents.task import TaskAgent
 from mia.agents.memory import MemoryAgent
 from mia.memory.store import MemoryStore
-from mia.channels.wechat.agent import WeChatAgent
+from mia.channels.wechat.receiver import WeChatReceiverAgent
+from mia.channels.wechat.sender import WeChatSenderAgent
 
 
 def parse_args():
@@ -141,15 +142,22 @@ async def run_agent_pipeline(
     # WeChatAgent — 微信通信渠道 (可选)
     wechat_agent = None
     if enable_wechat:
-        wechat_agent = WeChatAgent(
+        wechat_receiver = WeChatReceiverAgent(
             bus=bus,
             bot_token=config.wechat.bot_token,
             bot_token_file=config.wechat.bot_token_file,
             base_url=config.wechat.base_url,
             enabled=config.wechat.enabled or enable_wechat,
             media_dir=config.wechat.media_dir,
-            mimo=mimo,  # TTS 语音合成
-            workspace_dir=config.agent.workspace_dir,  # TTS 音频输出
+        )
+        wechat_sender = WeChatSenderAgent(
+            bus=bus,
+            bot_token=config.wechat.bot_token,
+            bot_token_file=config.wechat.bot_token_file,
+            base_url=config.wechat.base_url,
+            enabled=True,
+            mimo=mimo,
+            workspace_dir=config.agent.workspace_dir,
         )
 
     # ─── 5. 启动所有 Agent ───────────────────────────
@@ -169,13 +177,14 @@ async def run_agent_pipeline(
     await scheduler.start()
     await sender.start()
     await task_agent.start()
-    if wechat_agent:
-        await wechat_agent.start()
+    if enable_wechat:
+        await wechat_receiver.start()
+        await wechat_sender.start()
 
     # 为每个 Agent 启动消息处理循环 (后台任务)
     agents = [receiver, memory_agent, scheduler, sender, task_agent]
-    if wechat_agent:
-        agents.append(wechat_agent)
+    if enable_wechat:
+        agents.extend([wechat_receiver, wechat_sender])
     tasks: list[asyncio.Task] = []
     for agent in agents:
         t = asyncio.create_task(agent.run())
@@ -239,8 +248,8 @@ async def run_agent_pipeline(
         # ─── 7. 清理 ──────────────────────────────────
         # 停止所有 Agent
         cleanup_agents = [receiver, memory_agent, scheduler, sender, task_agent]
-        if wechat_agent:
-            cleanup_agents.append(wechat_agent)
+        if enable_wechat:
+            cleanup_agents.extend([wechat_receiver, wechat_sender])
         for agent in cleanup_agents:
             await agent.stop()
 
@@ -338,6 +347,21 @@ async def run_cli_interactive(enable_wechat: bool = False) -> None:
     bus = MessageBus(max_queue_size=100)
     await bus.start()
 
+    # ─── 总线记忆镜像 ──────────────────────────────
+    # MemoryAgent 通过镜像订阅自动感知全总线消息，
+    # 不再依赖 SenderAgent/WeChatSenderAgent 显式发 CONVERSATION_DONE
+    _mirror_types = [
+        MessageType.USER_INTENT,
+        MessageType.SEND_TEXT,
+        MessageType.STREAM_END,
+        MessageType.EXECUTE_TASK,
+        MessageType.TASK_RESULT,
+        MessageType.TASK_ERROR,
+        MessageType.CONVERSATION_DONE,
+    ]
+    for mt in _mirror_types:
+        bus.subscribe_mirror(mt, "memory_agent")
+
     mimo = MiMoProvider(api_key=config.mimo.api_key)
     deepseek = DeepSeekProvider(api_key=config.deepseek.api_key)
 
@@ -401,12 +425,13 @@ async def run_cli_interactive(enable_wechat: bool = False) -> None:
     await sender.start()
     await task_agent.start()
     if wechat_agent:
-        await wechat_agent.start()
+        await wechat_receiver.start()
+        await wechat_sender.start()
 
     # 后台消息处理循环 (持久运行)
     agent_list = [receiver, memory_agent, scheduler, sender, task_agent]
-    if wechat_agent:
-        agent_list.append(wechat_agent)
+    if enable_wechat:
+        agent_list.extend([wechat_receiver, wechat_sender])
     tasks: list[asyncio.Task] = []
     for agent in agent_list:
         tasks.append(asyncio.create_task(agent.run()))
@@ -615,8 +640,8 @@ async def run_cli_interactive(enable_wechat: bool = False) -> None:
         # ─── 清理 — 退出时执行一次 ─────────────────
         print("\n\033[90m正在关闭 Agent 系统...\033[0m")
         cleanup_agents = [receiver, memory_agent, scheduler, sender, task_agent]
-        if wechat_agent:
-            cleanup_agents.append(wechat_agent)
+        if enable_wechat:
+            cleanup_agents.extend([wechat_receiver, wechat_sender])
         for agent in cleanup_agents:
             await agent.stop()
         for t in tasks:

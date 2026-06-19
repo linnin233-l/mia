@@ -203,6 +203,28 @@ class MemoryAgent(BaseAgent):
             self.provider.__class__.__name__,
         )
 
+    async def on_stop(self) -> None:
+        """关闭时强制落盘 — 临时记忆 → 二级持久记忆
+
+        防止进程退出时 Level 1 临时记忆丢失。
+        _consolidate_daily() 自带 30s 超时 + _fallback_persist() 兜底。
+        """
+        if self._working_memory or self._daily_buffer:
+            logger.info(
+                "[MemoryAgent] 关闭中，落盘记忆 (临时{}条 / 对话{}轮)...",
+                len(self._working_memory), len(self._daily_buffer),
+            )
+            print(
+                f"\033[34m[MemoryAgent]\033[0m "
+                f"正在持久化记忆 ({len(self._working_memory)}条临时"
+                f"+{len(self._daily_buffer)}轮对话)..."
+            )
+            await self._consolidate_daily()
+            print(
+                f"\033[34m[MemoryAgent]\033[0m "
+                f"记忆已落盘 (共{self.store.count}条)"
+            )
+
     async def handle(self, msg: Message) -> None:
         """消息分发 — 处理 USER_INTENT 和 CONVERSATION_DONE"""
         if msg.msg_type == MessageType.USER_INTENT:

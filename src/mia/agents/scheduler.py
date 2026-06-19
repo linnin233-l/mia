@@ -400,11 +400,13 @@ class SchedulerAgent(BaseAgent):
                 self._print_thought("决策: 语音回复用户", reasoning)
                 voice = detail.get("voice", "冰糖")
                 target = self._resolve_output_target()
+                meta = self._channel_meta(trigger_msg)
                 await self.bus.publish(make_send_voice(
                     message=message,
                     voice=voice,
                     session_id=self._session_id,
                     target=target,
+                    **meta,
                 ))
             elif self.enable_streaming:
                 # 文字回复：流式输出！
@@ -416,10 +418,12 @@ class SchedulerAgent(BaseAgent):
                     message = await self._generate_fallback_reply(trigger_msg)
                 self._print_thought("决策: 回复用户", reasoning)
                 target = self._resolve_output_target()
+                meta = self._channel_meta(trigger_msg)
                 await self.bus.publish(make_send_text(
                     message=message,
                     session_id=self._session_id,
                     target=target,
+                    **meta,
                 ))
             logger.info("[Scheduler] 对话完成, action=reply")
 
@@ -485,12 +489,14 @@ class SchedulerAgent(BaseAgent):
         """
         # 1. 构建流式回复的 LLM 上下文
         reply_messages = self._build_reply_context(trigger_msg)
+        meta = self._channel_meta(trigger_msg)
 
         # 2. 通知输出目标准备接收流式文本
         target = self._resolve_output_target()
         await self.bus.publish(make_stream_start(
             session_id=self._session_id,
             target=target,
+            **meta,
         ))
 
         # 3. 流式生成 — 主 Provider + 备选 fallback
@@ -511,6 +517,7 @@ class SchedulerAgent(BaseAgent):
                     delta=chunk,
                     session_id=self._session_id,
                     target=target,
+                    **meta,
                 ))
         except Exception as e:
             stream_error = e
@@ -538,6 +545,7 @@ class SchedulerAgent(BaseAgent):
                         delta=chunk,
                         session_id=self._session_id,
                         target=target,
+                        **meta,
                     ))
                 stream_error = None  # fallback 成功
             except Exception as e2:
@@ -552,6 +560,7 @@ class SchedulerAgent(BaseAgent):
                 delta=full_text,
                 session_id=self._session_id,
                 target=target,
+                **meta,
             ))
 
         # 4. 通知输出目标流结束 (携带完整文本供 MemoryAgent 存储)
@@ -560,6 +569,7 @@ class SchedulerAgent(BaseAgent):
             full_message=full_text,
             session_id=self._session_id,
             target=target,
+            **meta,
         ))
         logger.info("[Scheduler] 流式回复完成, len={}", len(full_text))
 
@@ -653,6 +663,22 @@ class SchedulerAgent(BaseAgent):
 
     # ─── 辅助方法 ──────────────────────────────────────
 
+    def _channel_meta(self, trigger_msg: Message) -> dict:
+        """从 trigger_msg.payload 提取渠道元数据（context_token, to_user_id）
+
+        这些字段由 WeChatReceiverAgent 注入 RAW_INPUT → ReceiverAgent 透传 → 到达此处。
+        使 Scheduler 输出消息携带这些字段 → WeChatSenderAgent 直接用它们发 iLink 消息。
+        """
+        payload = trigger_msg.payload if trigger_msg else {}
+        meta: dict = {}
+        ct = payload.get("context_token", "")
+        tu = payload.get("to_user_id", "")
+        if ct:
+            meta["context_token"] = ct
+        if tu:
+            meta["to_user_id"] = tu
+        return meta
+
     def _resolve_output_target(self) -> str:
         """根据 session_id 前缀确定回复目标 Agent
 
@@ -669,8 +695,8 @@ class SchedulerAgent(BaseAgent):
         if ":" in sid:
             channel = sid.split(":")[0]
             # 已知渠道白名单 — 防止伪造
-            if channel in {"wechat"}:
-                return channel
+            if channel == "wechat":
+                return "wechat_sender"  # 微信收发分离: receiver 收, sender 发
         # 默认: 无前缀 uuid = CLI/API → SenderAgent
         return "sender"
 

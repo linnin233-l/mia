@@ -39,6 +39,9 @@ class MessageBus:
         self._subscribers: Set[str] = set()
         self._max_queue_size = max_queue_size
         self._running = False
+        # 镜像投递: {MessageType → {mirror_target_names}}
+        # 指定类型的消息自动额外投递一份给 mirror target
+        self._mirrors: dict[MessageType, set[str]] = defaultdict(set)
         logger.info("MessageBus 初始化, max_queue_size={}", max_queue_size)
 
     async def subscribe(self, name: str) -> None:
@@ -53,12 +56,31 @@ class MessageBus:
             self._subscribers.add(name)
             logger.info("MessageBus: {} 已订阅", name)
 
+    def subscribe_mirror(self, msg_type: MessageType, target: str) -> None:
+        """注册镜像订阅 — 指定类型的消息自动额外投递一份给 target
+
+        用于 MemoryAgent 等需要感知全总线消息的 Agent。
+        不重复投递给 source 自己（避免死循环）。
+
+        Args:
+            msg_type: 要镜像的消息类型
+            target: 镜像目标名称
+        """
+        if target not in self._queues:
+            self._queues[target] = asyncio.Queue(maxsize=self._max_queue_size)
+            self._subscribers.add(target)
+        self._mirrors[msg_type].add(target)
+        logger.info("MessageBus: {} 镜像订阅 {} → {}", target, msg_type.value, target)
+
     async def unsubscribe(self, name: str) -> None:
         """取消订阅"""
         if name in self._queues:
             del self._queues[name]
             self._subscribers.discard(name)
-            logger.info("MessageBus: {} 已取消订阅", name)
+        # 清理该 name 的所有镜像订阅
+        for mirrors in self._mirrors.values():
+            mirrors.discard(name)
+        logger.info("MessageBus: {} 已取消订阅", name)
 
     async def publish(self, msg: Message) -> bool:
         """
@@ -93,6 +115,16 @@ class MessageBus:
                 logger.warning(
                     "MessageBus: 目标 '{}' 未订阅，消息丢弃: {}",
                     msg.target, msg,
+                )
+
+        # ─── 镜像投递 ────────────────────────────────
+        # 某些 Agent (如 MemoryAgent) 需要感知特定类型的消息，
+        # 通过 subscribe_mirror() 注册后在 publish() 时自动额外投递一份
+        mirrors = self._mirrors.get(msg.msg_type, set())
+        for mirror in mirrors:
+            if mirror != msg.source and mirror != msg.target:
+                await self._put_safe(
+                    self._queues[mirror], msg, mirror,
                 )
 
         return delivered

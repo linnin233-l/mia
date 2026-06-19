@@ -121,6 +121,8 @@ def make_user_intent(
     intent: str,
     media_refs: Optional[list[str]] = None,
     session_id: Optional[str] = None,
+    context_token: str = "",
+    to_user_id: str = "",
 ) -> Message:
     """构建 USER_INTENT 消息
 
@@ -129,19 +131,24 @@ def make_user_intent(
         intent: Receiver 理解后的意图描述
         media_refs: 关联的媒体文件路径列表 (图片/音频)
         session_id: 会话 ID
+        context_token: 微信渠道的 iLink context_token (透传给回复端)
+        to_user_id: 微信渠道的用户 ID (透传给回复端)
     """
-    # 注意: target 设为 "memory_agent"，而非直接 "scheduler"
-    # MemoryAgent 会拦截 USER_INTENT，检索记忆上下文，
-    # 然后将 enriched 消息转发给 Scheduler
+    payload: dict = {
+        "original": original,
+        "intent": intent,
+        "media_refs": media_refs or [],
+    }
+    if context_token:
+        payload["context_token"] = context_token
+    if to_user_id:
+        payload["to_user_id"] = to_user_id
+
     return Message(
         msg_type=MessageType.USER_INTENT,
         source="receiver",
         target="memory_agent",
-        payload={
-            "original": original,
-            "intent": intent,
-            "media_refs": media_refs or [],
-        },
+        payload=payload,
         session_id=session_id,
     )
 
@@ -150,6 +157,8 @@ def make_send_text(
     message: str,
     session_id: Optional[str] = None,
     target: str = "sender",
+    context_token: str = "",
+    to_user_id: str = "",
 ) -> Message:
     """构建 SEND_TEXT 消息
 
@@ -157,12 +166,19 @@ def make_send_text(
         message: 要发送给用户的文本内容
         session_id: 会话 ID
         target: 目标 Agent 名称（默认 "sender"，多渠道时可指定其他目标）
+        context_token: 微信渠道 iLink context_token
+        to_user_id: 微信渠道用户 ID
     """
+    payload: dict = {"message": message}
+    if context_token:
+        payload["context_token"] = context_token
+    if to_user_id:
+        payload["to_user_id"] = to_user_id
     return Message(
         msg_type=MessageType.SEND_TEXT,
         source="scheduler",
         target=target,
-        payload={"message": message},
+        payload=payload,
         session_id=session_id,
     )
 
@@ -173,25 +189,24 @@ def make_send_voice(
     audio_format: str = "wav",
     session_id: Optional[str] = None,
     target: str = "sender",
+    context_token: str = "",
+    to_user_id: str = "",
 ) -> Message:
-    """构建 SEND_VOICE 消息
-
-    Args:
-        message: 要合成语音的文本
-        voice: 音色 ID
-        audio_format: 输出格式 (wav/pcm16)
-        session_id: 会话 ID
-        target: 目标 Agent 名称（默认 "sender"，多渠道时可指定其他目标）
-    """
+    """构建 SEND_VOICE 消息"""
+    payload: dict = {
+        "message": message,
+        "voice": voice,
+        "format": audio_format,
+    }
+    if context_token:
+        payload["context_token"] = context_token
+    if to_user_id:
+        payload["to_user_id"] = to_user_id
     return Message(
         msg_type=MessageType.SEND_VOICE,
         source="scheduler",
         target=target,
-        payload={
-            "message": message,
-            "voice": voice,
-            "format": audio_format,
-        },
+        payload=payload,
         session_id=session_id,
     )
 
@@ -282,18 +297,20 @@ def make_task_error(
 def make_stream_start(
     session_id: Optional[str] = None,
     target: str = "sender",
+    context_token: str = "",
+    to_user_id: str = "",
 ) -> Message:
-    """构建 STREAM_START 消息 — 通知 Sender 准备接收流式文本
-
-    Args:
-        session_id: 会话 ID
-        target: 目标 Agent 名称（默认 "sender"，多渠道时可指定其他目标）
-    """
+    """构建 STREAM_START 消息"""
+    payload: dict = {}
+    if context_token:
+        payload["context_token"] = context_token
+    if to_user_id:
+        payload["to_user_id"] = to_user_id
     return Message(
         msg_type=MessageType.STREAM_START,
         source="scheduler",
         target=target,
-        payload={},
+        payload=payload,
         session_id=session_id,
     )
 
@@ -302,19 +319,20 @@ def make_stream_chunk(
     delta: str,
     session_id: Optional[str] = None,
     target: str = "sender",
+    context_token: str = "",
+    to_user_id: str = "",
 ) -> Message:
-    """构建 STREAM_CHUNK 消息 — 推送一个文本增量
-
-    Args:
-        delta: 增量文本 (LLM 流式输出的一个 chunk)
-        session_id: 会话 ID
-        target: 目标 Agent 名称（默认 "sender"，多渠道时可指定其他目标）
-    """
+    """构建 STREAM_CHUNK 消息"""
+    payload: dict = {"delta": delta}
+    if context_token:
+        payload["context_token"] = context_token
+    if to_user_id:
+        payload["to_user_id"] = to_user_id
     return Message(
         msg_type=MessageType.STREAM_CHUNK,
         source="scheduler",
         target=target,
-        payload={"delta": delta},
+        payload=payload,
         session_id=session_id,
     )
 
@@ -323,19 +341,20 @@ def make_stream_end(
     full_message: str,
     session_id: Optional[str] = None,
     target: str = "sender",
+    context_token: str = "",
+    to_user_id: str = "",
 ) -> Message:
-    """构建 STREAM_END 消息 — 通知 Sender 流式文本已完成
-
-    Args:
-        full_message: 完整的回复文本 (供 MemoryAgent 存储)
-        session_id: 会话 ID
-        target: 目标 Agent 名称（默认 "sender"，多渠道时可指定其他目标）
-    """
+    """构建 STREAM_END 消息"""
+    payload: dict = {"message": full_message}
+    if context_token:
+        payload["context_token"] = context_token
+    if to_user_id:
+        payload["to_user_id"] = to_user_id
     return Message(
         msg_type=MessageType.STREAM_END,
         source="scheduler",
         target=target,
-        payload={"message": full_message},
+        payload=payload,
         session_id=session_id,
     )
 
