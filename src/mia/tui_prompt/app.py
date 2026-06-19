@@ -130,7 +130,6 @@ class MiaTuiApp:
             wrap_lines=True,
             always_hide_cursor=True,
             right_margins=[ScrollbarMargin()],
-            scroll_offset=1,
         )
 
         # ─── 分隔线 ────────────────────────────────────────
