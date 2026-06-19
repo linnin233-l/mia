@@ -18,7 +18,6 @@ from datetime import datetime
 from typing import Optional
 
 from prompt_toolkit.application import Application
-from prompt_toolkit.application.current import get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import FormattedText
@@ -35,7 +34,6 @@ from prompt_toolkit.layout.controls import (
     FormattedTextControl,
 )
 from prompt_toolkit.styles import Style
-from prompt_toolkit.widgets import Button, Label
 
 from loguru import logger
 
@@ -141,14 +139,14 @@ class MiaTuiApp:
         )
 
         # ─── 输入区域 ───────────────────────────────────────
-        # 使用 Buffer + BufferControl 实现自定义输入
-        # accept_handler 在 Enter 时调用，返回 True 清空 Buffer
+        # multiline=False → Enter 触发 accept_handler 直接发送
         self._input_buffer = Buffer(
             completer=WordCompleter([
                 "/help", "/quit", "/exit", "/q",
                 "/compact", "/memory",
             ]),
             complete_while_typing=False,
+            multiline=False,
             accept_handler=self._on_buffer_accept,
         )
         input_control = BufferControl(
@@ -162,17 +160,23 @@ class MiaTuiApp:
             wrap_lines=True,
         )
 
-        # ─── 发送按钮 ────────────────────────────────────────
-        send_button = Button(
-            text="发送",
-            handler=self._on_send_clicked,
+        # ─── 快捷键提示 ────────────────────────────────────────
+        hint_label = Window(
+            content=FormattedTextControl(
+                "Enter 发送\n"
+                "Ctrl+C 退出\n"
+                "Esc 聚焦输入"
+            ),
+            width=14,
+            style="class:system",
+            align=WindowAlign.CENTER,
         )
 
         # ─── 底部输入区 ──────────────────────────────────────
         input_container = VSplit([
             input_window,
             Window(width=1),  # spacer
-            send_button,
+            hint_label,
         ], height=3, padding=0)
 
         # ─── 整体布局 ──────────────────────────────────────
@@ -203,12 +207,11 @@ class MiaTuiApp:
         def _(event):
             """退出 TUI"""
             self._add_message("system", "正在退出...")
-            # 设置标志让 run_async 返回
             event.app.exit()
 
         @kb.add("escape")
         def _(event):
-            """聚焦输入框"""
+            """Esc 聚焦输入框"""
             try:
                 event.app.layout.focus_last()
             except Exception:
@@ -287,13 +290,13 @@ class MiaTuiApp:
     # ══════════════════════════════════════════════════════
 
     def _on_buffer_accept(self, buffer: Buffer) -> bool:
-        """Buffer accept_handler — Enter 键时调用
+        """Buffer accept_handler — Enter 键触发 (multiline=False)
 
         返回 True 让 prompt_toolkit 自动清空 Buffer。
         """
         text = buffer.text.strip()
         if not text:
-            return True  # 空输入，直接清空
+            return True  # 空输入，清空
 
         if text.startswith("/"):
             self._handle_command(text.lower())
@@ -301,24 +304,6 @@ class MiaTuiApp:
             self._send_message(text)
 
         return True  # 清空 Buffer
-
-    def _on_send_clicked(self) -> None:
-        """发送按钮点击处理"""
-        if self._input_buffer is None:
-            return
-
-        text = self._input_buffer.text.strip()
-        if not text:
-            return
-
-        if text.startswith("/"):
-            self._handle_command(text.lower())
-        else:
-            self._send_message(text)
-
-        # 手动清空 (按钮点击不走 accept_handler)
-        self._input_buffer.reset()
-        self._invalidate()
 
     def _send_message(self, text: str) -> None:
         """发送用户消息到 Agent 系统"""

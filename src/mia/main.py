@@ -638,7 +638,13 @@ def main():
             use_tui = True
 
         if use_tui:
-            asyncio.run(run_tui_mode())
+            try:
+                asyncio.run(run_tui_mode())
+            except Exception as e:
+                # TUI 启动失败（如 Git Bash 不支持 Win32Output）→ 降级 CLI
+                print(f"\033[33m[TUI] 启动失败: {e}\033[0m")
+                print("\033[33m[TUI] 降级为传统 CLI 模式\033[0m")
+                asyncio.run(run_cli_interactive())
         else:
             asyncio.run(run_cli_interactive())
 
