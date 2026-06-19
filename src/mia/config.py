@@ -83,6 +83,7 @@ class AgentConfig(BaseSettings):
 
     # TUI
     tui_enabled: bool = True              # 默认启动 TUI 模式 (MIA_TUI_ENABLED)
+    tui_active: bool = False              # 运行时标记: 当前是否在 TUI 模式中
 
     model_config = {"env_prefix": "MIA_"}
 

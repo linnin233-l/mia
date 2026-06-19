@@ -511,10 +511,8 @@ class MiaTuiApp:
         """启动 TUI 并进入主循环
 
         返回时 TUI 已关闭。
+        (loguru 抑制已在 main.run_tui_mode() 中处理)
         """
-        # 抑制 loguru stderr (避免干扰 TUI)
-        logger.remove()
-
         # 显示欢迎消息
         self._add_message("system",
             f"MIA v0.2.0 已就绪  |  模型: {self.config.mimo.chat_model}  "

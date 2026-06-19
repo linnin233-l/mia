@@ -692,7 +692,25 @@ class SchedulerAgent(BaseAgent):
     # SchedulerAgent 通过 payload["memory_context"] 消费记忆上下文
 
     def _print_thought(self, title: str, detail: str) -> None:
-        """结构化输出思考过程 — 同时发布到 TUI (如启用)"""
+        """结构化输出思考过程 — CLI 模式打印，TUI 模式只发布到 bus"""
+        # TUI 模式: 只发布到 bus，不 print (避免污染终端)
+        from mia.config import get_config
+        is_tui = get_config().agent.tui_active
+
+        if is_tui:
+            # 只发布 TUI 消息
+            try:
+                if self.bus:
+                    asyncio.ensure_future(
+                        self.bus.publish(
+                            make_tui_thought("scheduler", title, detail)
+                        )
+                    )
+            except Exception:
+                pass
+            return
+
+        # CLI 模式: 打印到终端
         indent = "   "
         print(f"\033[36m[Scheduler]\033[0m {title}")
         if detail:
@@ -700,7 +718,7 @@ class SchedulerAgent(BaseAgent):
                 print(f"{indent}\033[90m├─\033[0m {line}")
         print()
 
-        # 发布到 TUI (通过 bus，不阻塞)
+        # 同时尝试发布 TUI 消息 (TUI 未订阅时消息被丢弃，无副作用)
         try:
             if self.bus:
                 asyncio.ensure_future(
@@ -709,4 +727,4 @@ class SchedulerAgent(BaseAgent):
                     )
                 )
         except Exception:
-            pass  # TUI 发布失败不影响主流程
+            pass

@@ -290,21 +290,23 @@ class MemoryAgent(BaseAgent):
         # 合并为完整的 memory_context
         memory_context = "\n\n".join(context_parts)
 
-        # ─── 结构化展示 ────────────────────────────
-        print(f"\033[34m[MemoryAgent]\033[0m 检索记忆")
-        print(f"   \033[90m├─\033[0m 意图: {intent[:80]}")
-        print(f"   \033[90m├─\033[0m 对话历史: {len(self._conversation_history)} 轮可用, 注入最近 {min(len(self._conversation_history), self.max_history_turns)} 轮")
-        print(f"   \033[90m├─\033[0m 持久知识: {self.store.count} 条")
-        print(f"   \033[90m├─\033[0m 临时记忆: {len(self._working_memory)} 条")
-        if knowledge_text:
-            print(f"   \033[90m├─\033[0m 知识注入: {knowledge_text[:80]}...")
-        else:
-            print(f"   \033[90m├─\033[0m 无相关知识")
-        if history_text:
-            print(f"   \033[90m└─\033[0m 历史注入: 最近 {min(len(self._conversation_history), self.max_history_turns)} 轮对话")
-        else:
-            print(f"   \033[90m└─\033[0m 无对话历史")
-        print()
+        # ─── 结构化展示 (CLI 模式) ──────────────────
+        from mia.config import get_config
+        if not get_config().agent.tui_active:
+            print(f"\033[34m[MemoryAgent]\033[0m 检索记忆")
+            print(f"   \033[90m├─\033[0m 意图: {intent[:80]}")
+            print(f"   \033[90m├─\033[0m 对话历史: {len(self._conversation_history)} 轮可用, 注入最近 {min(len(self._conversation_history), self.max_history_turns)} 轮")
+            print(f"   \033[90m├─\033[0m 持久知识: {self.store.count} 条")
+            print(f"   \033[90m├─\033[0m 临时记忆: {len(self._working_memory)} 条")
+            if knowledge_text:
+                print(f"   \033[90m├─\033[0m 知识注入: {knowledge_text[:80]}...")
+            else:
+                print(f"   \033[90m├─\033[0m 无相关知识")
+            if history_text:
+                print(f"   \033[90m└─\033[0m 历史注入: 最近 {min(len(self._conversation_history), self.max_history_turns)} 轮对话")
+            else:
+                print(f"   \033[90m└─\033[0m 无对话历史")
+            print()
 
         # ─── 构造转发消息 ─────────────────────────
         payload = dict(msg.payload)

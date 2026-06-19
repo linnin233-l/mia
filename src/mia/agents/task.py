@@ -130,11 +130,15 @@ class TaskAgent(BaseAgent):
         tools_hint = msg.payload.get("tools_hint", [])
         task_id = msg.msg_id
 
-        # 结构化展示
-        print(f"\033[33m[TaskAgent]\033[0m 收到任务")
-        print(f"   \033[90m├─\033[0m 任务: {task}")
-        if tools_hint:
-            print(f"   \033[90m├─\033[0m 建议工具: {', '.join(tools_hint)}")
+        # TUI 模式下跳过 print，只发总线消息
+        from mia.config import get_config
+        is_tui = get_config().agent.tui_active
+
+        if not is_tui:
+            print(f"\033[33m[TaskAgent]\033[0m 收到任务")
+            print(f"   \033[90m├─\033[0m 任务: {task}")
+            if tools_hint:
+                print(f"   \033[90m├─\033[0m 建议工具: {', '.join(tools_hint)}")
 
         logger.info("[TaskAgent] 开始执行任务: {}", task)
 
@@ -144,7 +148,8 @@ class TaskAgent(BaseAgent):
                 tools_hint=tools_hint,
             )
 
-            print(f"   \033[90m└─\033[0m 完成, 工具调用: {len(tool_calls)}次")
+            if not is_tui:
+                print(f"   \033[90m└─\033[0m 完成, 工具调用: {len(tool_calls)}次")
 
             await self.send(make_task_result(
                 task_id=task_id,
@@ -228,8 +233,10 @@ class TaskAgent(BaseAgent):
                     })
                     continue
 
-                # 执行工具
-                print(f"   \033[90m├─\033[0m 调用工具: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})")
+                # 执行工具 (CLI 模式打印，TUI 模式只发总线消息)
+                from mia.config import get_config
+                if not get_config().agent.tui_active:
+                    print(f"   \033[90m├─\033[0m 调用工具: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})")
 
                 # 通知 TUI 工具开始执行
                 try:

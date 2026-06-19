@@ -498,8 +498,23 @@ async def run_tui_mode() -> None:
       - TUI 负责所有显示和输入
     """
     from mia.tui_prompt.app import MiaTuiApp
+    from pathlib import Path as _Path
 
     config = get_config()
+    config.agent.tui_active = True  # 标记 TUI 模式，Agent 跳过 print()
+
+    # ─── 抑制 loguru 终端输出 (TUI 模式下只写文件) ──────
+    logger.remove()
+    _log_dir = _Path(__file__).parent.parent.parent / "logs"
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    logger.add(
+        _log_dir / "mia-tui.log",
+        rotation="10 MB",
+        retention="3 days",
+        level="DEBUG",
+        format="{time} | {level} | {name}:{function}:{line} - {message}",
+    )
+
     bus = MessageBus(max_queue_size=100)
     await bus.start()
 
