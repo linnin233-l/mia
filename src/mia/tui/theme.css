@@ -26,7 +26,10 @@ Screen {
     overflow-y: auto;
     padding: 1 2;
     scrollbar-color: #3b4261;
-    scrollbar-color-hover: #565f89;
+}
+
+#chat-history:focus {
+    scrollbar-color: #565f89;
 }
 
 /* ─── 消息气泡 ─────────────────────────────────────── */

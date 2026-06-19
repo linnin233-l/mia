@@ -20,8 +20,8 @@ import uuid
 from pathlib import Path
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Vertical, ScrollableContainer
-from textual.widgets import Header, Footer, Static
+from textual.containers import ScrollableContainer
+from textual.widgets import Header, Static
 
 from loguru import logger
 
@@ -93,20 +93,16 @@ class MiaTuiApp(App):
     # ─── Compose: 布局 ──────────────────────────────────
 
     def compose(self) -> ComposeResult:
-        """构建 TUI 布局"""
-        # 使用内置 Header (显示时钟 + 标题)
+        """构建 TUI 布局
+
+        三层结构:
+          Header  — 标题 + 时钟 (自动高度)
+          #chat-history — 聊天历史 (1fr, 填充剩余空间)
+          #input-area  — 底部输入 (dock: bottom, 固定高度 3)
+        """
         yield Header(show_clock=True, name="MIA")
-
-        # 主内容区
-        with Vertical():
-            # 聊天历史 (可滚动)
-            yield ScrollableContainer(id="chat-history")
-
-            # 输入区域
-            yield InputArea(id="input-area")
-
-        # 我们使用 Textual 内置 Footer 来显示快捷键
-        yield Footer()
+        yield ScrollableContainer(id="chat-history")
+        yield InputArea(id="input-area")
 
     # ─── 生命周期 ──────────────────────────────────────
 
