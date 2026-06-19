@@ -366,16 +366,18 @@ class MiaTuiApp:
                 if p > 0:
                     lines.append("── 持久知识 ──")
                     for e in ma.store.get_recent(10):
-                        cat = getattr(e, 'category_label', e.category if hasattr(e, 'category') else '?')
-                        lines.append(f"  [{cat}] {e.content[:100]}")
+                        cat = e.category_label  # category_label 已含括号如 [洞察]
+                        cfd = f"c={e.confidence:.0%}" if hasattr(e, 'confidence') else ""
+                        lines.append(f"  {cat} {e.content[:90]}  {cfd}")
                     lines.append("")
 
                 # ── 临时记忆 ──
                 if w > 0:
                     lines.append("── 临时记忆 ──")
                     for e in ma._working_memory:
-                        cat = getattr(e, 'category_label', e.category if hasattr(e, 'category') else '?')
-                        lines.append(f"  [{cat}] {e.content[:100]}")
+                        cat = e.category_label
+                        imp = f"imp={e.importance:.1f}" if hasattr(e, 'importance') else ""
+                        lines.append(f"  {cat} {e.content[:90]}  {imp}")
                     lines.append("")
 
                 # ── 对话历史 ──
