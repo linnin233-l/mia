@@ -65,13 +65,13 @@ async def run_pipeline_query(
     )
     await bus.publish(raw_msg)
 
-    # 等待 CONVERSATION_DONE
-    await bus.subscribe("test")
+    # 等待 CONVERSATION_DONE — SenderAgent 发给 "main"
+    await bus.subscribe("main")
     final_response = ""
     remaining = timeout
 
     while remaining > 0:
-        msg = await bus.receive("test", timeout=1.0)
+        msg = await bus.receive("main", timeout=1.0)
         remaining -= 1.0
         if msg is None:
             continue
@@ -81,7 +81,7 @@ async def run_pipeline_query(
         if msg.msg_type == MessageType.TASK_ERROR:
             print(f"         \033[33m[TaskError]\033[0m {msg.payload.get('error', '')[:100]}")
 
-    await bus.unsubscribe("test")
+    await bus.unsubscribe("main")
     return final_response
 
 
