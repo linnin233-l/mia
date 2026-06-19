@@ -1,12 +1,12 @@
 """
-MIA TUI Application — 基于 Textual 的交互式终端界面
+MIA TUI Application — 基于 Textual RichLog 的交互式终端界面
 
-参照 OpenCode TUI 的设计模式:
-  - 顶部状态栏 (session/model/memory)
-  - 中间聊天历史面板 (消息气泡 + 可折叠思考/工具调用)
-  - 底部输入区域 (文本输入 + 发送按钮)
-  - 流式文本实时追加
-  - Toast 通知
+参照 OpenCode TUI 的界面模式:
+  - Header: 标题 + 时钟
+  - RichLog: 聊天历史 (Rich markup 格式化)
+  - Input + Button: 底部输入区
+  - 思考过程/工具调用: 内联 dim 彩色文本
+  - 流式输出: 逐 chunk 写入 RichLog
 
 用法:
     from mia.tui.app import MiaTuiApp
@@ -15,13 +15,12 @@ MIA TUI Application — 基于 Textual 的交互式终端界面
 """
 
 import asyncio
-import sys
 import uuid
 from pathlib import Path
 
 from textual.app import App, ComposeResult
-from textual.containers import ScrollableContainer
-from textual.widgets import Header, Static
+from textual.containers import Horizontal
+from textual.widgets import Header, RichLog, Input, Button
 
 from loguru import logger
 
@@ -30,10 +29,6 @@ from mia.bus.bus import MessageBus
 from mia.bus.message import (
     Message,
     MessageType,
-    make_tui_thought,
-    make_tui_tool,
-    make_tui_toast,
-    make_tui_status,
 )
 from mia.providers.mimo import MiMoProvider
 from mia.providers.deepseek import DeepSeekProvider
@@ -43,102 +38,59 @@ from mia.agents.sender import SenderAgent
 from mia.agents.task import TaskAgent
 from mia.agents.memory import MemoryAgent
 
-from mia.tui.widgets import (
-    StatusBar,
-    MessageBubble,
-    ThoughtSection,
-    ToolCallSection,
-    StreamingText,
-    InputArea,
-)
-
 
 class MiaTuiApp(App):
-    """MIA 主 TUI 应用
+    """MIA 主 TUI 应用 — RichLog 聊天界面"""
 
-    完整的 AI 对话终端界面，集成 MIA 的 MessageBus + Agent 系统。
-    """
-
-    # 内嵌 CSS
     CSS = """
-    Screen { background: #1a1b26; color: #c0caf5; }
+    Screen { background: #1a1b26; }
 
     Header { dock: top; }
 
     #chat-history {
         height: 1fr;
-        overflow-y: auto;
-        padding: 1 2;
-        scrollbar-color: #3b4261;
+        border: none;
+        background: #1a1b26;
+        padding: 0 1;
     }
 
-    #input-area {
+    #input-container {
         dock: bottom;
-        height: 5;
+        height: 3;
         background: #16161e;
         padding: 0 1;
         border-top: solid #3b4261;
     }
-    #input-area Input {
+
+    #user-input {
         width: 1fr;
         background: #1a1b26;
         color: #c0caf5;
         border: solid #3b4261;
         margin: 0 1 0 0;
     }
-    #input-area Input:focus { border: solid #7aa2f7; }
+    #user-input:focus { border: solid #7aa2f7; }
 
-    #send-button { width: 8; background: #7aa2f7; color: #1a1b26; text-style: bold; }
+    #send-button {
+        width: 8;
+        background: #7aa2f7;
+        color: #1a1b26;
+        text-style: bold;
+    }
     #send-button:hover { background: #9ece6a; }
-
-    MessageBubble { margin: 0 0 1 0; padding: 1 2; }
-    MessageBubble.user { border-left: solid #7aa2f7; }
-    MessageBubble.user .role-label { color: #7aa2f7; text-style: bold; }
-    MessageBubble.assistant { border-left: solid #9ece6a; }
-    MessageBubble.assistant .role-label { color: #9ece6a; text-style: bold; }
-    MessageBubble .content { margin: 1 0 0 0; color: #c0caf5; }
-
-    ThoughtSection {
-        margin: 0 0 1 2; padding: 0 1;
-        border-left: dashed #7dcfff; color: #7dcfff; height: auto;
-    }
-    ThoughtSection .title { color: #7dcfff; text-style: bold; }
-    ThoughtSection .detail { color: #a9b1d6; padding: 0 0 0 2; margin: 1 0 0 0; }
-
-    ToolCallSection {
-        margin: 0 0 1 2; padding: 0 1;
-        border-left: dashed #e0af68; color: #e0af68; height: auto;
-    }
-    ToolCallSection .title { color: #e0af68; text-style: bold; }
-    ToolCallSection .detail { color: #a9b1d6; padding: 0 0 0 2; margin: 1 0 0 0; }
-    ToolCallSection.success { border-left: solid #9ece6a; }
-    ToolCallSection.error { border-left: solid #f7768e; }
-
-    StreamingText { color: #c0caf5; margin: 0 0 1 0; }
-    StreamingText .prefix { color: #9ece6a; text-style: bold; }
-
-    .system-message { color: #565f89; margin: 0 0 1 0; padding: 0 2; }
-
-    .toast-info { background: #7aa2f7; color: #1a1b26; }
-    .toast-success { background: #9ece6a; color: #1a1b26; }
-    .toast-warning { background: #e0af68; color: #1a1b26; }
-    .toast-error { background: #f7768e; color: #1a1b26; }
     """
 
     BINDINGS = [
         ("ctrl+c", "quit_app", "退出"),
         ("ctrl+q", "quit_app", "退出"),
-        ("escape", "focus_input", "聚焦输入框"),
+        ("escape", "focus_input", "聚焦输入"),
     ]
-
-    # 最大聊天消息数（防止内存泄漏）
-    MAX_CHAT_MESSAGES = 100
 
     def __init__(self) -> None:
         super().__init__()
         self.config = get_config()
 
-        # Agent 系统组件 (在 on_mount 中初始化)
+        # Agent 系统
         self.bus: MessageBus | None = None
         self.mimo: MiMoProvider | None = None
         self.deepseek: DeepSeekProvider | None = None
@@ -150,194 +102,271 @@ class MiaTuiApp(App):
         self._agent_tasks: list[asyncio.Task] = []
         self._running = False
 
-        # 当前流式消息状态
-        self._current_stream: StreamingText | None = None
-        self._message_count = 0
+        # 流式状态
+        self._streaming = False
 
-    # ─── Compose: 布局 ──────────────────────────────────
+    # ─── Compose ────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
-        """构建 TUI 布局
-
-        Header(dock:top) → ChatHistory(1fr) → InputArea(dock:bottom, height:5)
-        """
-        yield Header(show_clock=True, name="MIA")
-        yield ScrollableContainer(id="chat-history")
-        yield InputArea(id="input-area")
+        """构建布局: Header + RichLog + Input/Button"""
+        yield Header(show_clock=True)
+        yield RichLog(
+            id="chat-history",
+            highlight=True,
+            markup=True,
+            wrap=True,
+            max_lines=5000,
+        )
+        with Horizontal(id="input-container"):
+            yield Input(
+                placeholder="输入消息... (/help 查看命令)",
+                id="user-input",
+            )
+            yield Button("发送", id="send-button", variant="primary")
 
     # ─── 生命周期 ──────────────────────────────────────
 
     async def on_mount(self) -> None:
-        """TUI 挂载后启动 Agent 系统"""
-        # 抑制 loguru 控制台输出 (TUI 模式下 stderr 会覆盖界面)
+        """启动 Agent 系统"""
+        # 抑制 loguru stderr 输出
         logger.remove()
         log_dir = Path(__file__).parent.parent.parent.parent / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         logger.add(
             log_dir / "mia-tui.log",
-            rotation="10 MB",
-            retention="3 days",
-            level="DEBUG",
-            format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
+            rotation="10 MB", retention="3 days", level="DEBUG",
+            format="{time} | {level} | {name}:{function}:{line} - {message}",
         )
 
-        # 设置 Header 标题
+        # Header 标题
         try:
-            header = self.query_one(Header)
-            header.title = "MIA — Modular Intelligent Agent"
-        except Exception:
-            pass
-
-        # 更新状态栏
-        try:
-            status = StatusBar()
-            await self.mount(status)
+            self.query_one(Header).title = "MIA — Modular Intelligent Agent"
         except Exception:
             pass
 
         # 启动 Agent 系统
         await self._start_agent_system()
 
-        # 订阅消息总线 (两个主题)
+        # 订阅消息
         await self.bus.subscribe("tui")
         await self.bus.subscribe("sender")
 
-        # 启动消息处理 worker
+        # 消息处理 worker
         self._running = True
         self.run_worker(self._process_bus_messages(), exclusive=False)
 
-        # 显示欢迎消息
-        self._add_system_message(
-            "MIA v0.2.0 已就绪\n"
-            f"  模型: {self.config.mimo.chat_model}\n"
-            f"  TUI: Textual 模式\n"
-            f"  输入 /help 查看命令, /quit 退出"
+        # 欢迎消息
+        self._write_system(
+            f"MIA v0.2.0 已就绪  |  模型: {self.config.mimo.chat_model}  "
+            f"|  /help 查看命令  |  /quit 退出"
         )
 
-        # 聚焦输入框
+        # 聚焦输入
+        self._focus_input()
+
+    async def on_unmount(self) -> None:
+        """清理"""
+        self._running = False
+        await self._stop_agent_system()
+
+    # ─── 用户输入 ──────────────────────────────────────
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        """发送按钮"""
+        if event.button.id == "send-button":
+            await self._submit_input()
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        """回车提交"""
+        await self._submit_input()
+
+    async def _submit_input(self) -> None:
+        """获取输入文本并处理"""
         try:
-            input_area = self.query_one("#input-area", InputArea)
-            input_area.focus_input()
+            inp = self.query_one("#user-input", Input)
+            text = inp.value.strip()
+            if not text:
+                return
+            inp.value = ""  # 清空
+
+            if text.startswith("/"):
+                self._handle_command(text.lower())
+            else:
+                self._send_message(text)
         except Exception:
             pass
 
-    async def on_unmount(self) -> None:
-        """TUI 关闭时清理 Agent 系统"""
-        self._running = False
-        await self._stop_agent_system()
+    def _send_message(self, text: str) -> None:
+        """发送用户消息到 Agent 系统"""
+        session_id = uuid.uuid4().hex[:12]
+
+        # 显示用户消息
+        chat = self.query_one("#chat-history", RichLog)
+        chat.write(f"[bold #7aa2f7]You[/] {text}")
+
+        # 发布到 MessageBus
+        if self.bus:
+            asyncio.create_task(self.bus.publish(Message(
+                msg_type=MessageType.RAW_INPUT,
+                source="tui", target="receiver",
+                payload={"text": text, "image": None, "voice": None},
+                session_id=session_id,
+            )))
+
+    # ─── 命令处理 ──────────────────────────────────────
+
+    def _handle_command(self, command: str) -> None:
+        """处理 / 命令"""
+        if command in ("/quit", "/exit", "/q"):
+            self._write_system("再见~")
+            asyncio.create_task(self._delayed_quit())
+
+        elif command in ("/help", "/h"):
+            self._write_system(
+                "[bold]MIA 命令列表[/]\n"
+                "  /quit, /exit, /q  — 退出\n"
+                "  /help, /h         — 帮助\n"
+                "  /compact          — 压缩对话历史\n"
+                "  /memory           — 查看记忆状态\n"
+                "  Ctrl+C            — 退出\n"
+                "  Esc               — 聚焦输入框"
+            )
+
+        elif command == "/compact":
+            if self.memory_agent:
+                self._write_system("[dim]正在压缩对话历史...[/]")
+                asyncio.create_task(self._do_compact())
+            else:
+                self._write_system("[bold red]记忆系统未就绪[/]")
+
+        elif command == "/memory":
+            if self.memory_agent:
+                w = len(self.memory_agent._working_memory)
+                p = self.memory_agent.store.count
+                h = len(self.memory_agent._conversation_history)
+                parts = [
+                    f"[bold]记忆状态[/]  临时: {w} 条  持久: {p} 条  历史: {h} 轮"
+                ]
+                for i, entry in enumerate(self.memory_agent._working_memory):
+                    parts.append(
+                        f"  [dim][{entry.category_label}][/] {entry.content[:100]} "
+                        f"[dim]({entry.confidence:.1f})[/]"
+                    )
+                self._write_system("\n".join(parts))
+            else:
+                self._write_system("[bold red]记忆系统未就绪[/]")
+
+        elif command.startswith("/image "):
+            self._write_system("[dim yellow]图片输入功能开发中...[/]")
+
+        else:
+            known = ["/quit", "/exit", "/q", "/help", "/h",
+                     "/compact", "/memory", "/image"]
+            suggestions = [c for c in known if c.startswith(command[:3])]
+            if suggestions:
+                self._write_system(
+                    f"[dim yellow]未知命令 '{command}'，"
+                    f"你是想输入 {' / '.join(suggestions[:3])} 吗？[/]"
+                )
+            else:
+                self._write_system(
+                    f"[dim yellow]未知命令 '{command}'，输入 /help 查看[/]"
+                )
+
+    async def _do_compact(self) -> None:
+        """执行 /compact"""
+        try:
+            summary = await self.memory_agent.compact()
+            new_count = self.memory_agent.store.count
+            self._write_system(
+                f"[bold green]对话历史已压缩[/]\n"
+                f"  持久知识: {new_count} 条\n"
+                f"  摘要: {summary[:200]}..."
+            )
+        except Exception as e:
+            self._write_system(f"[bold red]压缩失败: {e}[/]")
+
+    async def _delayed_quit(self) -> None:
+        """延迟退出"""
+        await asyncio.sleep(0.5)
+        await self.action_quit_app()
 
     # ─── Agent 系统生命周期 ────────────────────────────
 
     async def _start_agent_system(self) -> None:
-        """启动完整的 Agent 系统 (与 main.py 能力一致)"""
+        """启动 MessageBus + 全部 Agent"""
         config = self.config
 
-        # 创建 MessageBus
         self.bus = MessageBus(max_queue_size=100)
         await self.bus.start()
 
-        # 创建 Providers
         self.mimo = MiMoProvider(api_key=config.mimo.api_key)
         self.deepseek = DeepSeekProvider(api_key=config.deepseek.api_key)
 
-        # 创建 Agents
         self.receiver = ReceiverAgent(bus=self.bus, mimo=self.mimo)
         self.scheduler = SchedulerAgent(
-            bus=self.bus,
-            provider=self.mimo,
+            bus=self.bus, provider=self.mimo,
             model=config.mimo.chat_model,
             fallback_provider=self.deepseek,
             fallback_model=config.deepseek.chat_model,
             enable_streaming=config.agent.enable_streaming,
         )
         self.sender = SenderAgent(
-            bus=self.bus,
-            mimo=self.mimo,
+            bus=self.bus, mimo=self.mimo,
             output_dir=config.agent.workspace_dir,
         )
         self.task_agent = TaskAgent(
-            bus=self.bus,
-            provider=self.mimo,
+            bus=self.bus, provider=self.mimo,
             model=config.mimo.chat_model,
             fallback_provider=self.deepseek,
             fallback_model=config.deepseek.chat_model,
         )
         self.memory_agent = MemoryAgent(
-            bus=self.bus,
-            provider=self.mimo,
+            bus=self.bus, provider=self.mimo,
             model=config.mimo.chat_model,
             fallback_provider=self.deepseek,
             fallback_model=config.deepseek.chat_model,
         )
 
-        # 启动所有 Agent
-        await self.receiver.start()
-        await self.memory_agent.start()
-        await self.scheduler.start()
-        await self.sender.start()
-        await self.task_agent.start()
+        for agent in [self.receiver, self.memory_agent,
+                       self.scheduler, self.sender, self.task_agent]:
+            await agent.start()
 
-        # 后台消息处理循环
-        for agent in [
-            self.receiver,
-            self.memory_agent,
-            self.scheduler,
-            self.sender,
-            self.task_agent,
-        ]:
-            task = asyncio.create_task(agent.run())
-            self._agent_tasks.append(task)
+        for agent in [self.receiver, self.memory_agent,
+                       self.scheduler, self.sender, self.task_agent]:
+            self._agent_tasks.append(asyncio.create_task(agent.run()))
 
-        # 等待 Agent 就绪
         await asyncio.sleep(0.3)
-
         logger.info("[TUI] Agent 系统启动完成")
 
     async def _stop_agent_system(self) -> None:
         """关闭 Agent 系统"""
         logger.info("[TUI] 正在关闭 Agent 系统...")
-
-        # 停止所有 Agent
-        for agent in [
-            self.receiver,
-            self.memory_agent,
-            self.scheduler,
-            self.sender,
-            self.task_agent,
-        ]:
+        for agent in [self.receiver, self.memory_agent,
+                       self.scheduler, self.sender, self.task_agent]:
             if agent:
                 try:
                     await agent.stop()
                 except Exception:
                     pass
-
-        # 取消后台任务
         for task in self._agent_tasks:
             task.cancel()
         if self._agent_tasks:
             await asyncio.gather(*self._agent_tasks, return_exceptions=True)
-
-        # 停止总线
         if self.bus:
             await self.bus.stop()
-
         logger.info("[TUI] Agent 系统已关闭")
 
     # ─── 消息处理 Worker ───────────────────────────────
 
     async def _process_bus_messages(self) -> None:
-        """后台 Worker: 从 MessageBus 接收消息并更新 TUI
-
-        订阅 "tui" (TUI 专用消息) 和 "sender" (流式输出消息) 两个主题。
-        """
+        """后台: 处理 MessageBus 消息 → RichLog 显示"""
         while self._running:
             try:
-                # 检查 "tui" 主题
                 msg = await self.bus.receive("tui", timeout=0.05)
                 if msg:
                     await self._handle_tui_message(msg)
 
-                # 检查 "sender" 主题 (流式消息和 CONVERSATION_DONE)
                 msg = await self.bus.receive("sender", timeout=0.05)
                 if msg:
                     await self._handle_sender_message(msg)
@@ -345,319 +374,120 @@ class MiaTuiApp(App):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning("[TUI] 消息处理异常: {}", e)
-
-        logger.debug("[TUI] 消息处理 Worker 退出")
+                logger.warning("[TUI] 消息异常: {}", e)
 
     async def _handle_tui_message(self, msg: Message) -> None:
-        """处理 TUI 专用消息"""
-        msg_type = msg.msg_type
+        """TUI 专用消息 → RichLog"""
+        mt = msg.msg_type
 
-        if msg_type == MessageType.TUI_THOUGHT:
-            self._add_thought(
-                agent=msg.payload.get("agent", "?"),
-                title=msg.payload.get("title", ""),
-                detail=msg.payload.get("detail", ""),
-            )
+        if mt == MessageType.TUI_THOUGHT:
+            agent = msg.payload.get("agent", "?")
+            title = msg.payload.get("title", "")
+            detail = msg.payload.get("detail", "")
+            # 思考过程: dim cyan
+            color_map = {
+                "scheduler": "#7dcfff",
+                "task": "#e0af68",
+                "memory": "#bb9af7",
+                "receiver": "#f7768e",
+            }
+            c = color_map.get(agent, "#565f89")
+            chat = self.query_one("#chat-history", RichLog)
+            chat.write(f"[dim {c}]▶ {agent}: {title}[/]")
+            if detail:
+                chat.write(f"[dim]{detail}[/]")
 
-        elif msg_type == MessageType.TUI_TOOL:
-            self._add_tool_call(
-                tool_name=msg.payload.get("tool_name", "?"),
-                tool_args=msg.payload.get("tool_args", ""),
-                result=msg.payload.get("result", ""),
-                status=msg.payload.get("status", "running"),
-            )
+        elif mt == MessageType.TUI_TOOL:
+            tool_name = msg.payload.get("tool_name", "?")
+            tool_args = msg.payload.get("tool_args", "")
+            result = msg.payload.get("result", "")
+            status = msg.payload.get("status", "running")
+            chat = self.query_one("#chat-history", RichLog)
+            if status == "running":
+                chat.write(f"[dim #e0af68]🔧 {tool_name}({tool_args})[/]")
+            elif status == "success":
+                chat.write(f"[dim #9ece6a]  ✓ {tool_name}[/]")
+                if result:
+                    chat.write(f"[dim]{result[:200]}[/]")
+            else:
+                chat.write(f"[bold #f7768e]  ✖ {tool_name}: {result[:200]}[/]")
 
-        elif msg_type == MessageType.TUI_TOAST:
+        elif mt == MessageType.TUI_TOAST:
             level = msg.payload.get("level", "info")
             message = msg.payload.get("message", "")
-            self._show_toast(level, message)
+            try:
+                sev = "information"
+                if level in ("warning", "error"):
+                    sev = level
+                self.notify(message, severity=sev, timeout=5)
+            except Exception:
+                pass
 
-        elif msg_type == MessageType.TUI_STATUS:
+        elif mt == MessageType.TUI_STATUS:
+            # 状态更新 → Header subtitle
             key = msg.payload.get("key", "")
             value = msg.payload.get("value", "")
-            self._update_status(key, value)
+            try:
+                if key == "memory":
+                    self.query_one(Header).sub_title = f"记忆: {value}"
+            except Exception:
+                pass
 
     async def _handle_sender_message(self, msg: Message) -> None:
-        """处理来自 Sender 的消息"""
-        msg_type = msg.msg_type
+        """Sender 消息 (流式/文本) → RichLog"""
+        mt = msg.msg_type
 
-        if msg_type == MessageType.STREAM_START:
-            # 开始新的流式回复
-            self._start_stream()
+        if mt == MessageType.STREAM_START:
+            self._streaming = True
+            chat = self.query_one("#chat-history", RichLog)
+            chat.write("[bold #9ece6a]MIA[/] ")
 
-        elif msg_type == MessageType.STREAM_CHUNK:
-            # 追加流式文本增量
-            delta = msg.payload.get("delta", "")
-            self._append_stream(delta)
+        elif mt == MessageType.STREAM_CHUNK:
+            if self._streaming:
+                delta = msg.payload.get("delta", "")
+                if delta:
+                    chat = self.query_one("#chat-history", RichLog)
+                    chat.write(delta)
 
-        elif msg_type == MessageType.STREAM_END:
-            # 流式回复完成 → 转为永久消息气泡
+        elif mt == MessageType.STREAM_END:
+            self._streaming = False
+            chat = self.query_one("#chat-history", RichLog)
+            chat.write("")  # 换行
+
+        elif mt == MessageType.SEND_TEXT:
             message = msg.payload.get("message", "")
-            self._end_stream(message)
+            chat = self.query_one("#chat-history", RichLog)
+            chat.write(f"[bold #9ece6a]MIA[/] {message}")
+            chat.write("")
 
-        elif msg_type == MessageType.SEND_TEXT:
-            # 非流式文本回复 (spice 模式或 fallback)
-            message = msg.payload.get("message", "")
-            self._add_assistant_message(message)
+        elif mt == MessageType.CONVERSATION_DONE:
+            pass  # main 处理
 
-        elif msg_type == MessageType.CONVERSATION_DONE:
-            # 对话完成 (SenderAgent 已发布给 main 和 memory_agent，
-            # 我们这里只做记录，不做额外操作)
-            pass
-
-        elif msg_type == MessageType.TASK_ERROR:
+        elif mt == MessageType.TASK_ERROR:
             error = msg.payload.get("error", "")
-            self._show_toast("error", f"任务错误: {error}")
+            chat = self.query_one("#chat-history", RichLog)
+            chat.write(f"[bold #f7768e]✖ 任务错误: {error}[/]")
 
-    # ─── 用户输入处理 ──────────────────────────────────
+    # ─── 辅助方法 ──────────────────────────────────────
 
-    def on_input_area_submitted(self, event: InputArea.Submitted) -> None:
-        """用户提交了文本消息"""
-        text = event.text
-        session_id = uuid.uuid4().hex[:12]
-
-        # 添加用户消息气泡到聊天历史
-        self._add_user_message(text)
-
-        # 发布到 MessageBus
-        if self.bus:
-            raw_msg = Message(
-                msg_type=MessageType.RAW_INPUT,
-                source="tui",
-                target="receiver",
-                payload={
-                    "text": text,
-                    "image": None,
-                    "voice": None,
-                },
-                session_id=session_id,
-            )
-            asyncio.create_task(self.bus.publish(raw_msg))
-
-    def on_input_area_command(self, event: InputArea.Command) -> None:
-        """用户输入了斜杠命令"""
-        command = event.command.lower()
-        self._handle_command(command)
-
-    # ─── 命令处理 ──────────────────────────────────────
-
-    def _handle_command(self, command: str) -> None:
-        """处理 / 命令"""
-        if command in ("/quit", "/exit", "/q"):
-            self._add_system_message("再见~")
-            asyncio.create_task(self._delayed_quit())
-
-        elif command in ("/help", "/h"):
-            help_text = (
-                "**MIA 命令列表**\n\n"
-                "  `/quit`, `/exit`, `/q` — 退出\n"
-                "  `/help`, `/h` — 显示帮助\n"
-                "  `/compact` — 压缩对话历史 (将多轮对话总结为摘要)\n"
-                "  `/memory` — 查看记忆状态\n"
-                "  `/image <path>` — 发送图片\n"
-                "  Ctrl+C — 退出\n"
-                "  Esc — 聚焦输入框"
-            )
-            self._add_system_message(help_text)
-
-        elif command == "/compact":
-            self._add_system_message("正在压缩对话历史...")
-            if self.memory_agent:
-                asyncio.create_task(self._do_compact())
-
-        elif command == "/memory":
-            if self.memory_agent:
-                w = len(self.memory_agent._working_memory)
-                p = self.memory_agent.store.count
-                h = len(self.memory_agent._conversation_history)
-                # 列出临时记忆
-                parts = [f"**记忆状态**: 临时记忆 {w} 条, 持久知识 {p} 条, 对话历史 {h} 轮"]
-                for i, entry in enumerate(self.memory_agent._working_memory):
-                    parts.append(
-                        f"  [{entry.category_label}] {entry.content[:80]} "
-                        f"(confidence={entry.confidence:.1f})"
-                    )
-                self._add_system_message("\n".join(parts))
-            else:
-                self._add_system_message("记忆系统未就绪")
-
-        elif command.startswith("/image "):
-            # TODO: 图片输入
-            self._show_toast("warning", "图片输入功能开发中...")
-
-        else:
-            # 未知命令，尝试模糊匹配
-            known = ["/quit", "/exit", "/q", "/help", "/h", "/compact", "/memory", "/image"]
-            suggestions = [c for c in known if c.startswith(command[:3])]
-            if suggestions:
-                self._add_system_message(
-                    f"未知命令 `{command}`，你是想输入 {' / '.join(suggestions[:3])} 吗？"
-                )
-            else:
-                self._add_system_message(f"未知命令 `{command}`，输入 /help 查看可用命令")
-
-    async def _do_compact(self) -> None:
-        """执行 /compact 操作"""
+    def _write_system(self, text: str) -> None:
+        """写入系统消息 (dim italic)"""
         try:
-            summary = await self.memory_agent.compact()
-            new_count = self.memory_agent.store.count
-            self._add_system_message(
-                f"对话历史已压缩\n"
-                f"  摘要: {summary[:200]}...\n"
-                f"  持久知识: {new_count} 条"
-            )
-        except Exception as e:
-            self._show_toast("error", f"压缩失败: {e}")
-
-    async def _delayed_quit(self) -> None:
-        """延迟退出 (让用户看到再见消息)"""
-        await asyncio.sleep(0.5)
-        await self.action_quit_app()
-
-    # ─── UI 更新方法 ───────────────────────────────────
-
-    def _add_user_message(self, text: str) -> None:
-        """添加用户消息气泡到聊天面板"""
-        bubble = MessageBubble(role="user", content=text, role_label="You")
-        self._append_to_chat(bubble)
-
-    def _add_assistant_message(self, text: str) -> None:
-        """添加 AI 回复消息气泡到聊天面板"""
-        bubble = MessageBubble(role="assistant", content=text, role_label="MIA")
-        self._append_to_chat(bubble)
-
-    def _add_system_message(self, text: str) -> None:
-        """添加系统消息 (灰色提示) 到聊天面板"""
-        msg = Static(
-            f"[dim italic]{text}[/dim italic]",
-            classes="system-message",
-        )
-        self._append_to_chat(msg)
-
-    def _add_thought(self, agent: str, title: str, detail: str) -> None:
-        """添加可折叠的思考过程区块"""
-        section = ThoughtSection(agent=agent, title=title, detail=detail)
-        self._append_to_chat(section)
-
-    def _add_tool_call(
-        self,
-        tool_name: str,
-        tool_args: str,
-        result: str,
-        status: str,
-    ) -> None:
-        """添加可折叠的工具调用区块"""
-        section = ToolCallSection(
-            tool_name=tool_name,
-            tool_args=tool_args,
-            result=result,
-            status=status,
-        )
-        self._append_to_chat(section)
-
-    def _start_stream(self) -> None:
-        """开始新的流式回复 — 创建 StreamingText widget"""
-        self._current_stream = StreamingText()
-        self._append_to_chat(self._current_stream)
-
-    def _append_stream(self, delta: str) -> None:
-        """追加流式文本增量"""
-        if self._current_stream:
-            self._current_stream.append(delta)
-            # 自动滚动到底部
-            try:
-                chat = self.query_one("#chat-history", ScrollableContainer)
-                chat.scroll_end(animate=False)
-            except Exception:
-                pass
-
-    def _end_stream(self, full_text: str) -> None:
-        """流式回复完成 — 将 StreamingText 转为 MessageBubble"""
-        # 移除 StreamingText widget
-        if self._current_stream:
-            try:
-                self._current_stream.remove()
-            except Exception:
-                pass
-
-        # 替换为永久消息气泡
-        if full_text:
-            bubble = MessageBubble(
-                role="assistant",
-                content=full_text,
-                role_label="MIA",
-            )
-            self._append_to_chat(bubble)
-
-        self._current_stream = None
-
-    def _show_toast(self, level: str, message: str) -> None:
-        """显示 Toast 通知"""
-        try:
-            self.notify(
-                message,
-                severity=level if level in ("information", "warning", "error") else "information",
-                timeout=5,
-            )
+            chat = self.query_one("#chat-history", RichLog)
+            chat.write(f"[dim italic]{text}[/]")
         except Exception:
             pass
 
-    def _update_status(self, key: str, value: str) -> None:
-        """更新状态栏"""
+    def _focus_input(self) -> None:
+        """聚焦输入框"""
         try:
-            # 使用 Footer 的 highlight 区域显示状态
-            # 简单方案：直接在 chat 中不显示，用 Header subtitle
-            subtitle_parts = []
-            if key == "memory":
-                subtitle_parts.append(f"记忆: {value}")
-            elif key == "model":
-                subtitle_parts.append(f"模型: {value}")
-            else:
-                subtitle_parts.append(f"{key}: {value}")
-            header = self.query_one(Header)
-            if subtitle_parts:
-                header.sub_title = " │ ".join(subtitle_parts)
-        except Exception:
-            pass
-
-    def _append_to_chat(self, widget) -> None:
-        """向聊天面板追加一个 widget，自动滚动"""
-        try:
-            chat = self.query_one("#chat-history", ScrollableContainer)
-            chat.mount(widget)
-            self._message_count += 1
-
-            # 限制消息数量，移除旧消息
-            if self._message_count > self.MAX_CHAT_MESSAGES:
-                children = list(chat.children)
-                if len(children) > self.MAX_CHAT_MESSAGES:
-                    # 移除最旧的 20 条
-                    for old in children[:20]:
-                        try:
-                            old.remove()
-                        except Exception:
-                            pass
-                    self._message_count = len(list(chat.children))
-
-            # 自动滚动到底部
-            chat.scroll_end(animate=False)
-        except Exception as e:
-            logger.debug("[TUI] append_to_chat 失败: {}", e)
-
-    # ─── Actions ────────────────────────────────────────
-
-    def action_focus_input(self) -> None:
-        """聚焦到输入框"""
-        try:
-            input_area = self.query_one("#input-area", InputArea)
-            input_area.focus_input()
+            self.query_one("#user-input", Input).focus()
         except Exception:
             pass
 
     async def action_quit_app(self) -> None:
-        """退出 TUI 应用"""
-        self._add_system_message("正在退出...")
+        """退出"""
+        self._write_system("正在退出...")
         await asyncio.sleep(0.3)
         await self._stop_agent_system()
         self.exit()
