@@ -69,17 +69,13 @@ class MiaTuiApp(App):
         grid-gutter: 0;
     }
 
-    Header { row: 0; }
-
     #chat-history {
-        row: 1;
         overflow-y: auto;
         padding: 1 2;
         scrollbar-color: #3b4261;
     }
 
     #input-area {
-        row: 2;
         height: auto;
         min-height: 3;
         background: #16161e;
