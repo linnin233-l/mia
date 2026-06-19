@@ -59,7 +59,60 @@ class MiaTuiApp(App):
     完整的 AI 对话终端界面，集成 MIA 的 MessageBus + Agent 系统。
     """
 
-    CSS_PATH = str(Path(__file__).parent / "theme.css")
+    # 内嵌 CSS (避免文件路径缓存问题)
+    CSS = """
+    Screen { background: #1a1b26; color: #c0caf5; }
+
+    #chat-history {
+        height: 1fr;
+        overflow-y: auto;
+        padding: 1 2;
+        scrollbar-color: #3b4261;
+    }
+
+    MessageBubble { margin: 0 0 1 0; padding: 1 2; }
+    MessageBubble.user { border-left: solid #7aa2f7; }
+    MessageBubble.user .role-label { color: #7aa2f7; text-style: bold; }
+    MessageBubble.assistant { border-left: solid #9ece6a; }
+    MessageBubble.assistant .role-label { color: #9ece6a; text-style: bold; }
+    MessageBubble .content { margin: 1 0 0 0; color: #c0caf5; }
+
+    ThoughtSection {
+        margin: 0 0 1 2; padding: 0 1;
+        border-left: dashed #7dcfff; color: #7dcfff; height: auto;
+    }
+    ThoughtSection .title { color: #7dcfff; text-style: bold; }
+    ThoughtSection .detail { color: #a9b1d6; padding: 0 0 0 2; margin: 1 0 0 0; }
+
+    ToolCallSection {
+        margin: 0 0 1 2; padding: 0 1;
+        border-left: dashed #e0af68; color: #e0af68; height: auto;
+    }
+    ToolCallSection .title { color: #e0af68; text-style: bold; }
+    ToolCallSection .detail { color: #a9b1d6; padding: 0 0 0 2; margin: 1 0 0 0; }
+    ToolCallSection.success { border-left: solid #9ece6a; }
+    ToolCallSection.error { border-left: solid #f7768e; }
+
+    StreamingText { color: #c0caf5; margin: 0 0 1 0; }
+    StreamingText .prefix { color: #9ece6a; text-style: bold; }
+
+    #input-area {
+        dock: bottom; height: 3; background: #16161e;
+        padding: 0 1; border-top: solid #3b4261;
+    }
+    #input-area Input { width: 1fr; background: #1a1b26; color: #c0caf5; border: solid #3b4261; margin: 0 1 0 0; }
+    #input-area Input:focus { border: solid #7aa2f7; }
+
+    #send-button { width: 8; background: #7aa2f7; color: #1a1b26; text-style: bold; }
+    #send-button:hover { background: #9ece6a; }
+
+    .system-message { color: #565f89; margin: 0 0 1 0; padding: 0 2; }
+
+    .toast-info { background: #7aa2f7; color: #1a1b26; }
+    .toast-success { background: #9ece6a; color: #1a1b26; }
+    .toast-warning { background: #e0af68; color: #1a1b26; }
+    .toast-error { background: #f7768e; color: #1a1b26; }
+    """
 
     BINDINGS = [
         ("ctrl+c", "quit_app", "退出"),
@@ -108,6 +161,18 @@ class MiaTuiApp(App):
 
     async def on_mount(self) -> None:
         """TUI 挂载后启动 Agent 系统"""
+        # 抑制 loguru 控制台输出 (TUI 模式下 stderr 会覆盖界面)
+        logger.remove()
+        log_dir = Path(__file__).parent.parent.parent.parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        logger.add(
+            log_dir / "mia-tui.log",
+            rotation="10 MB",
+            retention="3 days",
+            level="DEBUG",
+            format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
+        )
+
         # 设置 Header 标题
         try:
             header = self.query_one(Header)
