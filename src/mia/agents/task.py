@@ -13,6 +13,7 @@ TaskAgent 自己也是一个小的 LLM 循环，但它只关心"怎么做"，
 import json
 import re
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Optional
 
 from loguru import logger
@@ -33,44 +34,27 @@ from mia.tools.weather import WeatherTool
 from mia.tools.file import FileTool
 
 
-# ─── TaskAgent System Prompt ─────────────────────────────
+# ─── TaskAgent System Prompt (从 prompts/ 加载) ─────
 
-TASK_AGENT_SYSTEM_PROMPT = """你是一个任务执行器(TaskAgent)。你会收到一个任务描述，
-你的目标是使用可用的工具完成任务并返回结果。
+_PROMPTS_DIR = Path(__file__).parent.parent.parent.parent / "prompts"
 
-## 核心原则：尽早完成！
-- 你最多只能执行 5 次工具调用。如果你用完了所有次数还未 finish，任务会失败。
-- 因此，一旦你获得了足够回答用户的信息，立即 finish，不要无限优化搜索词。
-- **硬性限制：最多调用 2 次同类工具（web_search 算同类）。第 2 次搜索后不管结果如何，必须立即 finish。**
-- 搜索工具返回的结果可能不完美，这很正常 — 从已有结果中提取有用信息即可。
 
-## 工作方式
-每次迭代，你可以选择:
-1. 调用一个工具来执行操作
-2. 返回最终结果 (当任务完成时)
+def _get_task_agent_system_prompt() -> str:
+    """从 prompts/task_agent.md 加载 TaskAgent 的 system prompt"""
+    path = _PROMPTS_DIR / "task_agent.md"
+    try:
+        if path.exists():
+            return path.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        logger.warning("[TaskAgent] 加载 prompt 文件失败: {}", e)
 
-## 输出格式
-严格返回 JSON:
-
-```json
-{
-  "reasoning": "当前分析和计划",
-  "action": "call_tool" | "finish",
-  "tool_name": "web_search",  // 仅 call_tool 时需要
-  "tool_args": {},             // 仅 call_tool 时需要
-  "result": "任务执行结果"     // 仅 finish 时需要
-}
-```
-
-## 规则
-1. 每次只调用一个工具
-2. 获得搜索结果后，优先 finish 并总结发现的信息，而不是反复调整搜索词
-3. 任务完成或无法继续时返回 finish
-4. 如果工具调用失败，分析原因后决定重试（最多1次）还是放弃
-5. 结果要简洁但完整，包含用户需要的信息
-6. 用中文组织最终结果
-7. 天气查询直接用 weather 工具，不要用 web_search 搜天气
-"""
+    # Fallback: 精简的默认提示词 (prompts/task_agent.md 不存在时使用)
+    return (
+        "你是一个任务执行器(TaskAgent)。使用可用工具完成任务。\n"
+        "尽早完成，最多5次工具调用，同类工具最多2次。\n"
+        "每次迭代返回 JSON: {\"reasoning\":\"...\",\"action\":\"call_tool\"|\"finish\",...}\n"
+        "任务完成时返回 finish。\n"
+    )
 
 
 # ─── TaskAgent ───────────────────────────────────────────
@@ -190,7 +174,7 @@ class TaskAgent(BaseAgent):
         date_context = f"当前北京时间: {now.strftime('%Y年%m月%d日 %H:%M')} (星期{['一','二','三','四','五','六','日'][now.weekday()]})"
 
         messages = [
-            {"role": "system", "content": TASK_AGENT_SYSTEM_PROMPT},
+            {"role": "system", "content": _get_task_agent_system_prompt()},
             {"role": "user", "content": f"{date_context}\n\n## 可用工具\n{tools_desc}\n\n## 任务\n{task}\n\n请开始执行。只返回 JSON。"},
         ]
 

@@ -39,12 +39,35 @@ from mia.bus.message import (
 from mia.providers.base import BaseProvider
 
 
-# ─── Agent Identity (从 AGENTS.md 加载) ──────────────
+# ─── Prompt 加载 — 从 prompts/ 目录读取，支持用户自定义 ──
+
+_PROMPTS_DIR = Path(__file__).parent.parent.parent.parent / "prompts"
+
+
+def _load_prompt(filename: str) -> str:
+    """从 prompts/ 目录加载提示词文件
+
+    Args:
+        filename: 文件名 (如 'scheduler.md')
+
+    Returns:
+        文件内容，文件不存在时返回空字符串
+    """
+    path = _PROMPTS_DIR / filename
+    try:
+        if path.exists():
+            return path.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        logger.warning("[Scheduler] 加载 prompt 文件失败 {}: {}", filename, e)
+    return ""
+
 
 def _load_agent_identity() -> str:
-    """加载项目根目录的 AGENTS.md，作为 MIA 的身份定义
+    """加载 AGENTS.md 作为 MIA 身份定义
 
-    如果文件不存在，返回精简的默认身份。
+    AGENTS.md 位于项目根目录，定义 MIA 的名字、性格、行为准则。
+    所有 system prompt 都会注入此身份，确保 Scheduler 和 Reply
+    生成器都清楚自己是 MIA，而不是底层组件名。
     """
     identity_path = Path(__file__).parent.parent.parent.parent / "AGENTS.md"
     try:
@@ -55,112 +78,46 @@ def _load_agent_identity() -> str:
     except Exception as e:
         logger.warning("[Scheduler] AGENTS.md 加载失败: {}，使用默认身份", e)
 
-    # Fallback: 默认身份
     return """# MIA
 你是 MIA（Modular Intelligent Agent），一个基于 LLM 决策循环的 AI 助手。
 名字: MIA。口气: 温暖干练，像靠谱的朋友。语言: 中英混用自然。"""
 
 
-# ─── Scheduler System Prompt ─────────────────────────────
+def _get_scheduler_system_prompt() -> str:
+    """获取 Scheduler 决策用的 system prompt — AGENTS.md 身份 + 决策指令
 
-SCHEDULER_SYSTEM_PROMPT = """你是一个智能调度员(Scheduler)。你的职责是分析用户意图并做出决策。
-
-## 你的工作方式
-你会收到用户意图(USER_INTENT)或任务执行结果(TASK_RESULT)。
-每次收到消息，你必须分析当前情况，返回一个 JSON 决策。
-
-## 决策格式 (严格遵守)
-
-```json
-{
-  "reasoning": "你的分析思考过程（中文，详细说明为什么做这个决定）",
-  "action": "reply" | "execute_task" | "done",
-  "action_detail": {}
-}
-```
-
-### action = "reply" — 回复用户
-如果是语音回复 (use_voice=true)，请在 action_detail.message 中包含完整回复文本。
-如果是文字回复 (use_voice=false)，不需要提供 message 字段（系统会自动流式生成回复），但可以提供简短的 message 作为 fallback。
-```json
-{
-  "reasoning": "...",
-  "action": "reply",
-  "action_detail": {
-    "message": "回复文本（仅 use_voice=true 时必填，use_voice=false 时可选）",
-    "use_voice": false
-  }
-}
-```
-
-### action = "execute_task" — 执行任务
-```json
-{
-  "reasoning": "...",
-  "action": "execute_task",
-  "action_detail": {
-    "task": "给 TaskAgent 的详细任务描述",
-    "tools_hint": ["web_search", "shell", "file"]
-  }
-}
-```
-
-### action = "done" — 任务完成
-```json
-{
-  "reasoning": "...",
-  "action": "done",
-  "action_detail": {}
-}
-```
-
-## 决策规则
-1. 收到 USER_INTENT → 分析用户意图，判断是否需要执行任务
-   - 简单问答/闲聊 → 直接 reply
-   - 需要搜索/计算/执行操作 → execute_task
-2. 收到 TASK_RESULT → 检查结果是否满足用户需求
-   - 满足 → reply 告知用户
-   - 不满足 → 可以再次 execute_task（但说明哪里不够）
-   - 部分满足 → reply 并说明哪些完成了哪些没有
-3. 收到 TASK_ERROR → 判断是否重试
-   - 可重试的错误（如网络超时）→ 重试一次
-   - 不可重试的错误 → reply 告知用户失败原因
-4. 不要重复执行完全相同的任务
-5. 如果连续2次任务都没进展，改为 reply 告诉用户当前情况
-
-## 回复格式要求
-- 文字回复 (use_voice=false) 时无需提供 message 字段，系统会自动流式生成
-- 语音回复 (use_voice=true) 时 message 字段必填，简洁明了控制在 200 字以内
-- 不要在 message 中使用多级列表或复杂格式
-- 严禁在 message 中使用未转义的双引号
-
-## 可用工具
-TaskAgent 可以使用以下工具:
-- web_search: 搜索互联网信息
-- weather: 查询指定城市的天气信息
-- shell: 执行Shell命令（代码、计算等）
-- file: 读写文件
-
-请严格返回 JSON 格式的决策，不要有任何其他文字。"""
+    身份在前，决策指令在后。这样 Scheduler 在做决策时知道自己是 MIA，
+    语音回复的 message 文本会自然使用 MIA 的身份和语气。
+    """
+    identity = _load_agent_identity()
+    instructions = _load_prompt("scheduler.md")
+    if not instructions:
+        # Fallback: 硬编码的默认决策指令 (prompts/scheduler.md 不存在时)
+        instructions = (
+            "你是一个智能调度员。你的职责是分析用户意图并做出决策。\n\n"
+            "## 决策格式\n"
+            "严格返回 JSON: {\"reasoning\":\"...\",\"action\":\"reply\"|\"execute_task\"|\"done\",\"action_detail\":{}}\n"
+            "action=reply 时: action_detail 包含 message(仅voice时必填) 和 use_voice(bool)\n"
+            "action=execute_task 时: action_detail 包含 task 和 tools_hint\n"
+            "直接回复时 use_voice=false 且无需 message(系统会流式生成)\n"
+        )
+    return identity + "\n\n---\n\n" + instructions
 
 
-# ─── Reply System Prompt (流式回复用) — 从 AGENTS.md 加载身份 ──
+# ─── Reply System Prompt — AGENTS.md + prompts/reply.md ─────
 
 def _get_reply_system_prompt() -> str:
-    """获取完整的回复生成 system prompt — 包含 AGENTS.md 身份定义"""
+    """获取回复生成用的 system prompt — AGENTS.md 身份 + 回复指令"""
     identity = _load_agent_identity()
-    instructions = """## 当前任务
-根据对话上下文生成自然、有帮助的回复。
-
-## 要求
-- 简洁明了，控制在 300 字以内
-- 如果用户询问了具体信息，准确回答
-- 如果涉及工具执行结果，准确引用其中的数据和结论
-- 语气友好自然，像朋友聊天一样
-- 直接输出回复文本，不要加任何前缀、标签或格式标记
-- 不要输出 JSON、代码块或其他结构化格式"""
-
-    return identity + "\n\n" + instructions
+    instructions = _load_prompt("reply.md")
+    if not instructions:
+        instructions = (
+            "## 当前任务\n根据对话上下文生成自然、有帮助的回复。\n\n"
+            "## 要求\n- 简洁明了，控制在 300 字以内\n"
+            "- 直接输出回复文本，不要加任何前缀、标签或格式标记\n"
+            "- 不要输出 JSON、代码块或其他结构化格式\n"
+        )
+    return identity + "\n\n---\n\n" + instructions
 
 
 # ─── SchedulerAgent ───────────────────────────────────────
@@ -373,7 +330,7 @@ class SchedulerAgent(BaseAgent):
     def _build_context(self, trigger_msg: Message) -> list[dict]:
         """构建 LLM 上下文消息列表 (包含由 MemoryAgent 注入的记忆上下文)"""
         messages = [
-            {"role": "system", "content": SCHEDULER_SYSTEM_PROMPT},
+            {"role": "system", "content": _get_scheduler_system_prompt()},
         ]
 
         # ─── 注入 MemoryAgent 提供的记忆上下文 ──────────
