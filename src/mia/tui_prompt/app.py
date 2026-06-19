@@ -25,6 +25,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
     HSplit,
     Layout,
+    ScrollbarMargin,
     VSplit,
     Window,
     WindowAlign,
@@ -125,10 +126,12 @@ class MiaTuiApp:
             text=self._render_messages,
             focusable=False,
         )
-        output_window = Window(
+        self._output_window = Window(
             content=self._output_control,
             wrap_lines=True,
             always_hide_cursor=True,
+            right_margins=[ScrollbarMargin()],
+            scroll_offset=1,
         )
 
         # ─── 分隔线 ────────────────────────────────────────
@@ -164,10 +167,11 @@ class MiaTuiApp:
         hint_label = Window(
             content=FormattedTextControl(
                 "Enter 发送\n"
+                "PgUp/Dn 滚动\n"
                 "Ctrl+C 退出\n"
                 "Esc 聚焦输入"
             ),
-            width=14,
+            width=16,
             style="class:system",
             align=WindowAlign.CENTER,
         )
@@ -181,7 +185,7 @@ class MiaTuiApp:
 
         # ─── 整体布局 ──────────────────────────────────────
         root_container = HSplit([
-            output_window,
+            self._output_window,
             separator,
             input_container,
         ])
@@ -214,6 +218,45 @@ class MiaTuiApp:
             """Esc 聚焦输入框"""
             try:
                 event.app.layout.focus_last()
+            except Exception:
+                pass
+
+        # ─── 滚动快捷键 ──────────────────────────────
+        output_win = self._output_window  # 闭包捕获
+
+        @kb.add("pageup")
+        def _(event):
+            """PageUp: 向上滚动输出区域"""
+            try:
+                if output_win.render_info:
+                    output_win.render_info.window_scroll_up(output_win, 8)
+            except Exception:
+                pass
+
+        @kb.add("pagedown")
+        def _(event):
+            """PageDown: 向下滚动输出区域"""
+            try:
+                if output_win.render_info:
+                    output_win.render_info.window_scroll_down(output_win, 8)
+            except Exception:
+                pass
+
+        @kb.add("c-home")
+        def _(event):
+            """Ctrl+Home: 跳到最顶部"""
+            try:
+                if output_win.render_info:
+                    output_win.render_info.window_scroll_up(output_win, 9999)
+            except Exception:
+                pass
+
+        @kb.add("c-end")
+        def _(event):
+            """Ctrl+End: 跳到最底部"""
+            try:
+                if output_win.render_info:
+                    output_win.render_info.window_scroll_down(output_win, 9999)
             except Exception:
                 pass
 
@@ -279,9 +322,22 @@ class MiaTuiApp:
                 self._stream_index -= 1
 
     def _invalidate(self) -> None:
-        """触发 UI 刷新"""
+        """触发 UI 刷新 (新内容自动滚动由 _scroll_to_bottom 处理)"""
         try:
             self._app.invalidate()
+        except Exception:
+            pass
+
+    def _scroll_to_bottom(self) -> None:
+        """滚动输出窗口到最底部"""
+        try:
+            output_win = self._output_window
+            if output_win and output_win.render_info:
+                ri = output_win.render_info
+                total = ri.content_height
+                visible = ri.window_height or 20
+                if total > visible:
+                    ri.window_scroll_down(output_win, total - visible)
         except Exception:
             pass
 
@@ -340,7 +396,10 @@ class MiaTuiApp:
                 "  /help /h — 帮助\n"
                 "  /compact — 压缩对话历史\n"
                 "  /memory — 查看记忆状态\n"
-                "  Ctrl+C — 退出  Esc — 聚焦输入"
+                "  Ctrl+C — 退出  Esc — 聚焦输入\n"
+                "\n"
+                "滚动: PageUp/PageDown 翻页\n"
+                "      Ctrl+Home/Ctrl+End 跳到顶/底"
             )
 
         elif command == "/compact":
