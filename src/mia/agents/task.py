@@ -166,6 +166,10 @@ class TaskAgent(BaseAgent):
         """
         tool_calls: list[dict] = []
 
+        # 读取 verbose 配置（用于工具调用的详细日志输出）
+        from mia.config import get_config
+        verbose = get_config().agent.verbose
+
         # 构建工具描述
         tools_desc = self._build_tools_description(tools_hint)
 

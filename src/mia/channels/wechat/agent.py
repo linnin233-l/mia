@@ -75,11 +75,14 @@ class WeChatAgent(BaseAgent):
         base_url: str = "",
         enabled: bool = True,
         media_dir: str = "",
+        mimo=None,  # MiMoProvider — 用于 TTS 语音合成
+        workspace_dir: str = "",  # TTS 音频临时输出目录
     ):
         super().__init__(name="wechat", bus=bus)
         self.enabled = enabled
         self.bot_token = bot_token
         self._base_url = base_url or "https://ilinkai.weixin.qq.com"
+        self._mimo = mimo  # 可选: 用于合成语音回复
 
         # Token 文件和媒体目录
         self._bot_token_file = (
@@ -95,6 +98,13 @@ class WeChatAgent(BaseAgent):
             if media_dir
             else Path.home() / ".mia" / "media"
         )
+        # TTS 音频输出目录
+        self._workspace_dir = (
+            Path(workspace_dir).expanduser()
+            if workspace_dir
+            else Path.home() / ".mia" / "workspace"
+        )
+        self._workspace_dir.mkdir(parents=True, exist_ok=True)
 
         # ILinkClient 实例（延迟创建，在 start() 中初始化）
         self._client = None  # type: Optional[ILinkClient]
@@ -201,10 +211,8 @@ class WeChatAgent(BaseAgent):
         elif msg.msg_type == MessageType.STREAM_END:
             await self._handle_stream_end(msg)
         elif msg.msg_type == MessageType.SEND_VOICE:
-            # 微信 iLink Bot 暂不支持直接发送语音，
-            # 降级为发送文本消息
-            message = msg.payload.get("message", "")
-            await self._send_to_user(msg.session_id, message)
+            # 微信渠道: 生成 TTS 语音 → 上传 CDN → 发送语音消息
+            await self._handle_output_voice(msg)
 
     # ─── 输出处理 ──────────────────────────────────────
 
@@ -239,6 +247,183 @@ class WeChatAgent(BaseAgent):
 
         if full_text:
             await self._send_to_user(sid, full_text)
+
+    async def _handle_output_voice(self, msg: Message) -> None:
+        """处理语音输出 — TTS 合成 → 上传 CDN → 发送到微信
+
+        iLink API 支持发送音频文件（media_type=4，消息 type=3 voice_item）。
+        流程:
+          1. 从 SEND_VOICE payload 获取文本
+          2. 调用 MiMo TTS 生成 PCM16/WAV 音频
+          3. 上传到微信 CDN（AES-128-ECB 加密）
+          4. 发送 voice_item 消息（用户可在微信直接播放）
+          5. 同时发送文本作为 fallback（防止音频下载失败）
+
+        Args:
+            msg: SEND_VOICE 消息
+        """
+        message = msg.payload.get("message", "")
+        voice = msg.payload.get("voice", "冰糖")
+        audio_format = msg.payload.get("format", "wav")
+        session_id = msg.session_id
+
+        # 解析目标微信用户
+        to_user_id = ""
+        context_token = ""
+        if session_id and session_id in self._active_sessions:
+            meta = self._active_sessions[session_id]
+            to_user_id = meta.get("to_user_id", "")
+            context_token = meta.get("context_token", "")
+        if not context_token and to_user_id:
+            context_token = self._user_context_tokens.get(to_user_id, "")
+
+        if not to_user_id or not message:
+            logger.warning(
+                "[WeChatAgent] SEND_VOICE 缺少 to_user_id 或 message"
+            )
+            return
+
+        audio_sent = False
+
+        # ─── 1. TTS 合成 ───────────────────────────────
+        if self._mimo:
+            try:
+                logger.info(
+                    "[WeChatAgent] 合成 TTS: text_len=%d voice=%s",
+                    len(message), voice,
+                )
+                audio_bytes = await self._mimo.synthesize(
+                    text=message,
+                    voice=voice,
+                    audio_format=audio_format,
+                )
+
+                # 保存音频到临时文件
+                filename = f"wechat_voice_{msg.msg_id}.{audio_format}"
+                audio_path = self._workspace_dir / filename
+                audio_path.write_bytes(audio_bytes)
+                logger.info(
+                    "[WeChatAgent] TTS 已保存: %s (%d bytes)",
+                    audio_path, len(audio_bytes),
+                )
+
+                # ─── 2. 上传到微信 CDN 并发送 ────────────
+                try:
+                    upload_result = await self._client.upload_media(
+                        str(audio_path),
+                        media_type=4,  # 4 = 语音
+                        to_user_id=to_user_id,
+                    )
+
+                    # 发送 voice_item 消息
+                    resp = await self._client.sendmessage(
+                        {
+                            "to_user_id": to_user_id,
+                            "client_id": str(uuid.uuid4()),
+                            "message_type": 2,
+                            "message_state": 2,
+                            "context_token": context_token,
+                            "item_list": [
+                                {
+                                    "type": 3,  # voice_item
+                                    "voice_item": {
+                                        "media": {
+                                            "encrypt_query_param": (
+                                                upload_result[
+                                                    "encrypt_query_param"
+                                                ]
+                                            ),
+                                            "aes_key": upload_result[
+                                                "aes_key_b64"
+                                            ],
+                                            "encrypt_type": 1,
+                                        },
+                                    },
+                                },
+                            ],
+                        },
+                    )
+
+                    ret = resp.get("ret", -1) if isinstance(resp, dict) else -1
+                    if ret == 0:
+                        audio_sent = True
+                        logger.info(
+                            "[WeChatAgent] 语音消息已发送 to %s",
+                            to_user_id[:20],
+                        )
+                    else:
+                        logger.warning(
+                            "[WeChatAgent] 语音消息发送被拒: ret=%s",
+                            ret,
+                        )
+                except Exception as upload_err:
+                    logger.warning(
+                        "[WeChatAgent] 语音上传/发送失败: %s",
+                        upload_err,
+                    )
+                finally:
+                    # 清理临时音频文件
+                    try:
+                        audio_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+            except Exception as tts_err:
+                logger.warning(
+                    "[WeChatAgent] TTS 合成失败: %s，降级为文本",
+                    tts_err,
+                )
+        else:
+            logger.info(
+                "[WeChatAgent] 无 MiMoProvider，语音消息降级为文本"
+            )
+
+        # ─── 3. Fallback: 总是发送文本（防止音频无法播放） ──
+        # 语音消息前加标识
+        if audio_sent:
+            # 语音已发送，附简短说明
+            await self._send_text_to_user(
+                to_user_id,
+                context_token,
+                f"🎤 {message}",
+            )
+        else:
+            # 语音发送失败/不可用，纯文本
+            await self._send_text_to_user(
+                to_user_id,
+                context_token,
+                message,
+            )
+
+    async def _send_text_to_user(
+        self,
+        to_user_id: str,
+        context_token: str,
+        text: str,
+    ) -> None:
+        """发送文本到微信用户（内部辅助方法）
+
+        Args:
+            to_user_id: 微信用户 ID
+            context_token: iLink context_token
+            text: 要发送的文本
+        """
+        if not self._client or not to_user_id or not text:
+            return
+        try:
+            resp = await self._client.send_text(
+                to_user_id, text, context_token,
+            )
+            if isinstance(resp, dict) and resp.get("ret", 0) != 0:
+                logger.warning(
+                    "[WeChatAgent] send_text 被拒: ret=%s",
+                    resp.get("ret", ""),
+                )
+        except Exception:
+            logger.exception(
+                "[WeChatAgent] 发送文本失败 to=%s",
+                to_user_id[:20],
+            )
 
     async def _send_to_user(self, session_id: Optional[str], text: str) -> None:
         """将文本发送到对应的微信用户
@@ -474,6 +659,7 @@ class WeChatAgent(BaseAgent):
             # ─── 解析消息内容 ──────────────────────────
             text_parts: List[str] = []
             image_paths: List[str] = []
+            voice_paths: List[str] = []  # 下载的语音文件路径
 
             item_list: List[Dict[str, Any]] = msg.get("item_list") or []
             for item in item_list:
@@ -520,6 +706,7 @@ class WeChatAgent(BaseAgent):
 
                 elif item_type == 3:  # 语音
                     voice_item = item.get("voice_item") or {}
+                    # ─── ASR 转写文本（iLink 自动提供） ──
                     asr_text = (
                         voice_item.get("text_item", {}).get("text", "")
                         .strip()
@@ -530,7 +717,30 @@ class WeChatAgent(BaseAgent):
                     )
                     if asr_text:
                         text_parts.append(asr_text)
-                    else:
+
+                    # ─── 下载原始音频（用于多模态理解） ──
+                    # iLink 的语音消息包含 CDN 上的原始音频，
+                    # 下载后传给 ReceiverAgent → MiMo-V2.5 多模态理解
+                    # （content + emotion + intent，比纯 ASR 转写更丰富）
+                    media = voice_item.get("media") or {}
+                    encrypt_query_param = media.get(
+                        "encrypt_query_param", ""
+                    )
+                    aes_key = media.get("aes_key", "")
+                    if encrypt_query_param:
+                        audio_path = await self._download_media(
+                            client,
+                            aes_key,
+                            "voice.wav",
+                            encrypt_query_param=encrypt_query_param,
+                        )
+                        if audio_path:
+                            voice_paths.append(audio_path)
+                            logger.info(
+                                "[WeChatAgent] 语音音频已下载: %s",
+                                audio_path,
+                            )
+                    if not asr_text and not voice_paths:
                         text_parts.append("[语音: 无转写]")
 
                 elif item_type == 4:  # 文件
@@ -555,7 +765,7 @@ class WeChatAgent(BaseAgent):
 
             # ─── 构建用户输入 ──────────────────────────
             text = "\n".join(text_parts).strip()
-            if not text and not image_paths:
+            if not text and not image_paths and not voice_paths:
                 return
 
             # 生成 session_id
@@ -578,13 +788,23 @@ class WeChatAgent(BaseAgent):
                 self._save_context_tokens()
 
             # ─── 发布 RAW_INPUT 到消息总线 ─────────────
-            user_input = text or "请分析这张图片"
+            # 确定用户输入文本（语音优先，因为语音下载了原始音频文件）
+            if text:
+                user_input = text
+            elif image_paths:
+                user_input = "请分析这张图片"
+            elif voice_paths:
+                user_input = ""  # 纯语音 — ReceiverAgent 会做多模态理解
+            else:
+                user_input = ""
 
             logger.info(
-                "wechat recv: from=%s group=%s text_len=%s",
+                "wechat recv: from=%s group=%s text_len=%s images=%d voice=%d",
                 (from_user_id or "")[:20],
                 (group_id or "")[:20],
                 len(text),
+                len(image_paths),
+                len(voice_paths),
             )
 
             # 将消息转发到主事件循环（跨线程安全）
@@ -592,6 +812,7 @@ class WeChatAgent(BaseAgent):
                 self._publish_raw_input(
                     user_input=user_input,
                     image_paths=image_paths,
+                    voice_paths=voice_paths,
                     session_id=session_id,
                 ),
                 description=f"publish RAW_INPUT for {session_id}",
@@ -604,6 +825,7 @@ class WeChatAgent(BaseAgent):
         self,
         user_input: str,
         image_paths: List[str],
+        voice_paths: List[str],
         session_id: str,
     ) -> None:
         """在主事件循环中发布 RAW_INPUT 消息到总线
@@ -611,9 +833,14 @@ class WeChatAgent(BaseAgent):
         这会触发完整的 MIA Agent 链路:
           ReceiverAgent → MemoryAgent → SchedulerAgent → TaskAgent → SenderAgent
 
+        对于语音消息: iLink API 会同时返回 ASR 转写文本和 CDN 上的原始音频。
+        WeChatAgent 下载原始音频后传给 ReceiverAgent，后者使用 MiMo-V2.5
+        多模态理解（content + emotion + intent），比纯 ASR 转写更丰富。
+
         Args:
-            user_input: 用户文本输入
+            user_input: 用户文本输入（含 ASR 转写文本）
             image_paths: 图片文件路径列表
+            voice_paths: 语音文件路径列表（CDN 下载的原始音频）
             session_id: 会话 ID
         """
         # 构建 payload
@@ -626,6 +853,13 @@ class WeChatAgent(BaseAgent):
         if image_paths:
             payload["image"] = image_paths[0]
 
+        # 如果有语音（原始音频已下载），传给 ReceiverAgent 做多模态理解
+        # 优先级: voice > image — 因为语音是最主要的输入通道
+        if voice_paths:
+            payload["voice"] = voice_paths[0]
+            # 如果语音有 ASR 转写文本，ReceiverAgent 会结合两者做理解
+            # 如果纯语音无转写，ReceiverAgent 直接对音频做多模态理解
+
         raw_msg = Message(
             msg_type=MessageType.RAW_INPUT,
             source="wechat",
@@ -635,9 +869,14 @@ class WeChatAgent(BaseAgent):
         )
         await self.bus.publish(raw_msg)
 
+        # 终端提示
+        voice_hint = (
+            f" + 语音({voice_paths[0][-30:]})"
+            if voice_paths else ""
+        )
         print(
             f"\033[32m[WeChat]\033[0m 收到消息 → "
-            f"\033[90m{user_input[:80]}\033[0m"
+            f"\033[90m{user_input[:80]}{voice_hint}\033[0m"
         )
 
     # ─── QR 码登录 ─────────────────────────────────────

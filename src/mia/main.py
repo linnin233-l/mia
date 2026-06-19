@@ -154,6 +154,8 @@ async def run_agent_pipeline(
             base_url=config.wechat.base_url,
             enabled=config.wechat.enabled or enable_wechat,
             media_dir=config.wechat.media_dir,
+            mimo=mimo,  # TTS 语音合成
+            workspace_dir=config.agent.workspace_dir,  # TTS 音频输出
         )
 
     # ─── 5. 启动所有 Agent ───────────────────────────
