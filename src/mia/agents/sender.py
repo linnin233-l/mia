@@ -174,3 +174,21 @@ class SenderAgent(BaseAgent):
             print(f"   \033[90m└─\033[0m 降级为文本: {message}")
             print()
             print(f"\033[1m{'-'*50}\033[0m")
+
+        # 通知 main 对话已完成 (修复: 之前少了这一步，导致语音回复后 Main 超时)
+        await self.bus.publish(Message(
+            msg_type=MessageType.CONVERSATION_DONE,
+            source=self.name,
+            target="main",
+            payload={"message": message},
+            session_id=msg.session_id,
+        ))
+
+        # 同时通知 MemoryAgent 存储本轮对话
+        await self.bus.publish(Message(
+            msg_type=MessageType.CONVERSATION_DONE,
+            source=self.name,
+            target="memory_agent",
+            payload={"message": message},
+            session_id=msg.session_id,
+        ))

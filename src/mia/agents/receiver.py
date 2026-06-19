@@ -61,9 +61,7 @@ class ReceiverAgent(BaseAgent):
         intent_parts: list[str] = []
         media_refs: list[str] = []
 
-        # ─── 处理文本 ───────────────────────────────
-        if text:
-            intent_parts.append(f"用户说: {text}")
+        has_text = bool(text and text.strip())
 
         # ─── 处理图片 ───────────────────────────────
         if image_path:
@@ -72,12 +70,26 @@ class ReceiverAgent(BaseAgent):
             if img_desc:
                 intent_parts.append(f"图片内容: {img_desc}")
 
-        # ─── 处理语音 (多模态理解，非纯 ASR) ──────
+        # ─── 处理语音 (多模态理解) ──────────────────
         if voice_path:
             media_refs.append(voice_path)
             voice_understanding = await self._understand_audio(voice_path, text)
             if voice_understanding:
-                intent_parts.append(f"语音理解: {voice_understanding}")
+                if has_text:
+                    # 用户有文字说明 + 语音内容
+                    intent_parts.append(f"用户说: {text}")
+                    intent_parts.append(f"语音内容: {voice_understanding}")
+                else:
+                    # 纯语音输入: 音频理解结果 = 用户的消息
+                    # 告诉 Scheduler 直接回应，不要分析语音本身
+                    intent_parts.append(
+                        f"用户发送了一段语音消息，请直接基于以下理解回复用户"
+                        f"（把转写内容视为用户亲口说的话，不要分析语音本身）:\n"
+                        f"{voice_understanding}"
+                    )
+        else:
+            # 无语音: 纯文本输入
+            intent_parts.append(f"用户说: {text}")
 
         # ─── 构建 USER_INTENT ────────────────────────
         if not intent_parts:

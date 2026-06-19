@@ -19,6 +19,7 @@ import asyncio
 import json
 import re
 import time
+from pathlib import Path
 from typing import Optional
 
 from loguru import logger
@@ -36,6 +37,28 @@ from mia.bus.message import (
     make_stream_end,
 )
 from mia.providers.base import BaseProvider
+
+
+# ─── Agent Identity (从 AGENTS.md 加载) ──────────────
+
+def _load_agent_identity() -> str:
+    """加载项目根目录的 AGENTS.md，作为 MIA 的身份定义
+
+    如果文件不存在，返回精简的默认身份。
+    """
+    identity_path = Path(__file__).parent.parent.parent.parent / "AGENTS.md"
+    try:
+        if identity_path.exists():
+            content = identity_path.read_text(encoding="utf-8").strip()
+            logger.info("[Scheduler] 已加载 AGENTS.md ({:.0f} 字符)", len(content))
+            return content
+    except Exception as e:
+        logger.warning("[Scheduler] AGENTS.md 加载失败: {}，使用默认身份", e)
+
+    # Fallback: 默认身份
+    return """# MIA
+你是 MIA（Modular Intelligent Agent），一个基于 LLM 决策循环的 AI 助手。
+名字: MIA。口气: 温暖干练，像靠谱的朋友。语言: 中英混用自然。"""
 
 
 # ─── Scheduler System Prompt ─────────────────────────────
@@ -121,9 +144,13 @@ TaskAgent 可以使用以下工具:
 请严格返回 JSON 格式的决策，不要有任何其他文字。"""
 
 
-# ─── Reply System Prompt (流式回复用) ─────────────────────
+# ─── Reply System Prompt (流式回复用) — 从 AGENTS.md 加载身份 ──
 
-REPLY_SYSTEM_PROMPT = """你是一个智能助手 MIA。根据对话上下文生成自然、有帮助的回复。
+def _get_reply_system_prompt() -> str:
+    """获取完整的回复生成 system prompt — 包含 AGENTS.md 身份定义"""
+    identity = _load_agent_identity()
+    instructions = """## 当前任务
+根据对话上下文生成自然、有帮助的回复。
 
 ## 要求
 - 简洁明了，控制在 300 字以内
@@ -132,6 +159,8 @@ REPLY_SYSTEM_PROMPT = """你是一个智能助手 MIA。根据对话上下文生
 - 语气友好自然，像朋友聊天一样
 - 直接输出回复文本，不要加任何前缀、标签或格式标记
 - 不要输出 JSON、代码块或其他结构化格式"""
+
+    return identity + "\n\n" + instructions
 
 
 # ─── SchedulerAgent ───────────────────────────────────────
@@ -565,13 +594,13 @@ class SchedulerAgent(BaseAgent):
         """构建流式回复的 LLM 上下文消息列表
 
         包含:
-          - REPLY_SYSTEM_PROMPT (纯文本回复指令)
+          - _get_reply_system_prompt() (AGENTS.md 身份 + 回复指令)
           - 跨对话记忆上下文 (来自 MemoryAgent)
           - 决策历史 (最近 3 轮)
           - 当前触发消息
         """
         messages = [
-            {"role": "system", "content": REPLY_SYSTEM_PROMPT},
+            {"role": "system", "content": _get_reply_system_prompt()},
         ]
 
         # 注入 MemoryAgent 提供的记忆上下文

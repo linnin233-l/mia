@@ -443,8 +443,8 @@ async def run_cli_interactive() -> None:
                 user_input = (await loop.run_in_executor(
                     None, input, "\033[32mYou (语音说明/可选) > \033[0m"
                 )).strip()
-                if not user_input:
-                    user_input = "请理解这段语音的内容和意图"
+                # 不再注入虚拟的"请理解..."提示词
+                # 如果用户没输文字，Receiver 会将音频理解直接作为用户意图
 
             # /record — 麦克风录音输入
             if user_input.lower() == "/record":
@@ -469,8 +469,7 @@ async def run_cli_interactive() -> None:
                         user_input = (await loop.run_in_executor(
                             None, input, "\033[32mYou (语音说明/可选) > \033[0m"
                         )).strip()
-                        if not user_input:
-                            user_input = "请理解这段语音的内容和意图"
+                        # 不再注入虚拟提示词 — Receiver 会直接用音频理解作为意图
                     else:
                         print("  \033[31m[FAIL]\033[0m 录音失败或为空，请重试")
                         print()
