@@ -1,26 +1,7 @@
 {
   "version": 3,
-  "updated": "2026-06-19T14:58:51.763653+08:00",
+  "updated": "2026-06-19T15:30:04.530177+08:00",
   "days": {
-    "2026-06-19": {
-      "file": "daily/2026-06-19.json",
-      "entry_count": 4,
-      "daily_summary": "",
-      "keywords": [
-        "linnin233",
-        "TUI",
-        "调用链",
-        "记忆",
-        "Agent",
-        "Scheduler"
-      ],
-      "importance": 0.8,
-      "category_distribution": {
-        "insight": 2,
-        "preference": 1,
-        "fact": 1
-      }
-    },
     "2026-06-18": {
       "file": "daily/2026-06-18.json",
       "entry_count": 5,
@@ -38,6 +19,30 @@
         "preference": 1,
         "decision": 1,
         "task": 1
+      }
+    },
+    "2026-06-19": {
+      "file": "daily/2026-06-19.json",
+      "entry_count": 5,
+      "daily_summary": "",
+      "keywords": [
+        "linnin233",
+        "TUI",
+        "调用链",
+        "记忆",
+        "Agent",
+        "Scheduler",
+        "我喜",
+        "喜欢",
+        "欢一",
+        "个女",
+        "女孩"
+      ],
+      "importance": 0.8,
+      "category_distribution": {
+        "insight": 2,
+        "preference": 1,
+        "fact": 2
       }
     }
   }

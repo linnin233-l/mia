@@ -391,17 +391,11 @@ class MemoryAgent(BaseAgent):
                     "[MemoryAgent] Level 1 临时知识已提取: {} 条, working_total={}",
                     len(extracted), len(self._working_memory),
                 )
-                # TUI: 通知 Level 1 提取完成
-                await self._notify_tui(
-                    "L1 提取临时知识",
-                    f"本轮提取 {len(extracted)} 条 → 临时记忆共 {len(self._working_memory)} 条"
-                )
+                print(f"\033[34m[MemoryAgent]\033[0m L1 临时知识已提取: {len(extracted)} 条, 共 {len(self._working_memory)} 条")
         except asyncio.TimeoutError:
             logger.warning("[MemoryAgent] 临时知识提取超时 ({:.0f}s)，降级为本地提取",
                            self.EXTRACTION_TIMEOUT)
-            await self._notify_tui(
-                "L1 提取超时", f"LLM 超时({self.EXTRACTION_TIMEOUT}s)，降级为本地提取"
-            )
+            print(f"\033[34m[MemoryAgent]\033[0m L1 提取超时 ({self.EXTRACTION_TIMEOUT}s)，降级为本地提取")
             # 降级: 本地提取基础知识，不依赖 LLM，保证知识不丢失
             fallback_entry = self._local_extract_knowledge(
                 user_msg=self._pending_original or self._pending_intent,
@@ -416,8 +410,10 @@ class MemoryAgent(BaseAgent):
                 )
         except asyncio.CancelledError:
             logger.warning("[MemoryAgent] 临时知识提取被取消")
+            print(f"\033[34m[MemoryAgent]\033[0m L1 提取被取消")
         except Exception as e:
             logger.warning("[MemoryAgent] 临时知识提取失败: {}", e)
+            print(f"\033[34m[MemoryAgent]\033[0m L1 提取失败: {e}，降级为本地提取")
             # 同样降级为本地提取
             fallback_entry = self._local_extract_knowledge(
                 user_msg=self._pending_original or self._pending_intent,
@@ -433,10 +429,7 @@ class MemoryAgent(BaseAgent):
                 "[MemoryAgent] 临时记忆达到上限 ({} >= {})，触发强制合并",
                 len(self._working_memory), self.MAX_WORKING_ENTRIES,
             )
-            await self._notify_tui(
-                "L1 触发强制合并",
-                f"临时记忆达到 {len(self._working_memory)}/{self.MAX_WORKING_ENTRIES} 上限"
-            )
+            print(f"\033[34m[MemoryAgent]\033[0m 临时记忆达上限 ({len(self._working_memory)}/{self.MAX_WORKING_ENTRIES})，触发 L2 合并")
             await self._consolidate_daily()
 
         # ─── 4. 清理暂存 ───────────────────────────

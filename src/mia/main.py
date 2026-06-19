@@ -279,6 +279,20 @@ async def run_cli_interactive() -> None:
     # 系统初始化 — 只执行一次，整个交互会话内持续运行
     # ══════════════════════════════════════════════════════
 
+    # 交互模式下抑制 loguru 终端输出 — MemoryAgent 后台提取等日志
+    # 不应出现在 You> 提示符附近，只写文件
+    logger.remove()
+    from pathlib import Path as _Path
+    _log_dir = _Path(__file__).parent.parent.parent / "logs"
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    logger.add(
+        _log_dir / "mia.log",
+        rotation="10 MB",
+        retention="3 days",
+        level="DEBUG",
+        format="{time} | {level} | {name}:{function}:{line} - {message}",
+    )
+
     config = get_config()
     bus = MessageBus(max_queue_size=100)
     await bus.start()
