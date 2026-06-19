@@ -260,8 +260,14 @@ class MemoryBrowser:
             self._exit_requested = True
             return None
 
-        if result is None or result == "__EXIT_ENTRIES__":
-            self._exit_requested = True
+        # "[返回] 上一级": 只退出当前条目循环，不清除 _exit_requested
+        # (让外层日期选择循环继续运行)
+        if result is None:
+            # Esc 键: 返回上一级 (不退出)
+            return None
+        if result == "__EXIT_ENTRIES__":
+            # 明确选择 [返回]: 返回上一级
+            return None
 
         return result
 
