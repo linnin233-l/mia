@@ -217,10 +217,13 @@ class WeChatAgent(BaseAgent):
     # ─── 输出处理 ──────────────────────────────────────
 
     async def _handle_output_text(self, msg: Message) -> None:
-        """处理文本输出 — 直接发送到微信用户"""
+        """处理文本输出 — 直接发送到微信用户，然后发布 CONVERSATION_DONE"""
         message = msg.payload.get("message", "")
         if message:
             await self._send_to_user(msg.session_id, message)
+            print(f"\033[32m[WeChatAgent]\033[0m 文本已发送 ({len(message)}字)")
+        # 发布 CONVERSATION_DONE → MemoryAgent 存储记忆
+        await self._publish_conversation_done(msg, message)
 
     async def _handle_stream_start(self, msg: Message) -> None:
         """流式开始 — 初始化缓冲"""
@@ -235,7 +238,7 @@ class WeChatAgent(BaseAgent):
             self._stream_buffers[sid] += delta
 
     async def _handle_stream_end(self, msg: Message) -> None:
-        """流式结束 — 发送完整文本到微信"""
+        """流式结束 — 发送完整文本到微信，然后发布 CONVERSATION_DONE"""
         sid = msg.session_id or ""
         full_text = msg.payload.get("message", "")
 
@@ -247,6 +250,9 @@ class WeChatAgent(BaseAgent):
 
         if full_text:
             await self._send_to_user(sid, full_text)
+            print(f"\033[32m[WeChatAgent]\033[0m 流式文本已发送 ({len(full_text)}字)")
+        # 发布 CONVERSATION_DONE → MemoryAgent 存储记忆
+        await self._publish_conversation_done(msg, full_text)
 
     async def _handle_output_voice(self, msg: Message) -> None:
         """处理语音输出 — TTS 合成 → 上传 CDN → 发送到微信
@@ -350,6 +356,32 @@ class WeChatAgent(BaseAgent):
         # ─── 4. 文本 fallback ───────────────────────────
         prefix = "🎤 " if audio_sent else ""
         await self._send_text_to_user(to_user_id, context_token, f"{prefix}{message}")
+
+        # ─── 5. 发布 CONVERSATION_DONE → MemoryAgent 存储记忆 ──
+        await self._publish_conversation_done(msg, message)
+
+    async def _publish_conversation_done(
+        self, msg: Message, message: str,
+    ) -> None:
+        """发布 CONVERSATION_DONE — 通知 MemoryAgent 和 main 本轮对话结束
+
+        模仿 SenderAgent 的行为：同时发给 "main" 和 "memory_agent"。
+        MemoryAgent 收到后会追加对话历史 + 提取 Level 1 临时知识。
+        """
+        await self.bus.publish(Message(
+            msg_type=MessageType.CONVERSATION_DONE,
+            source=self.name,
+            target="main",
+            payload={"message": message},
+            session_id=msg.session_id,
+        ))
+        await self.bus.publish(Message(
+            msg_type=MessageType.CONVERSATION_DONE,
+            source=self.name,
+            target="memory_agent",
+            payload={"message": message},
+            session_id=msg.session_id,
+        ))
 
     async def _send_text_to_user(
         self,
