@@ -307,19 +307,16 @@ class WeChatAgent(BaseAgent):
                     audio_path, len(audio_bytes),
                 )
 
-                # ─── 2. 上传到微信 CDN 并发送 ────────────
-                # 注意: iLink Bot API 不支持 type=3 voice_item 发送，
-                # 只能以文件形式（type=4 file_item）发送音频。
-                # 参考 linninpaw: "WeChat has no dedicated audio send"
-                try:
-                    filename = f"mia_voice.{audio_format}"
-                    upload_result = await self._client.upload_media(
-                        str(audio_path),
-                        media_type=4,  # 4 = 语音（上传格式）
-                        to_user_id=to_user_id,
-                    )
+                # ─── 2. 上传到微信 CDN ────────────────
+                upload_result = await self._client.upload_media(
+                    str(audio_path),
+                    media_type=4,  # 4 = 语音
+                    to_user_id=to_user_id,
+                )
 
-                    # 以文件消息形式发送（用户在微信点击即可播放）
+                # ─── 3. 发送（voice_item 优先 → file_item 回退） ──
+                # 先尝试 voice_item (type=3) — 原生语音条
+                try:
                     resp = await self._client.sendmessage(
                         {
                             "to_user_id": to_user_id,
@@ -327,43 +324,58 @@ class WeChatAgent(BaseAgent):
                             "message_type": 2,
                             "message_state": 2,
                             "context_token": context_token,
-                            "item_list": [
-                                {
-                                    "type": 4,  # file_item（非 voice_item）
-                                    "file_item": {
-                                        "media": {
-                                            "encrypt_query_param": (
-                                                upload_result[
-                                                    "encrypt_query_param"
-                                                ]
-                                            ),
-                                            "aes_key": upload_result[
-                                                "aes_key_b64"
-                                            ],
-                                            "encrypt_type": 1,
-                                        },
-                                        "file_name": filename,
-                                        "len": str(
-                                            upload_result["filesize"]
-                                        ),
+                            "item_list": [{
+                                "type": 3,  # voice_item
+                                "voice_item": {
+                                    "media": {
+                                        "encrypt_query_param": upload_result["encrypt_query_param"],
+                                        "aes_key": upload_result["aes_key_b64"],
+                                        "encrypt_type": 1,
                                     },
                                 },
-                            ],
+                            }],
                         },
                     )
-
                     ret = resp.get("ret", -1) if isinstance(resp, dict) else -1
                     if ret == 0:
                         audio_sent = True
-                        logger.info(
-                            "[WeChatAgent] 语音文件已发送 to %s",
-                            to_user_id[:20],
-                        )
+                        logger.info("[WeChatAgent] voice_item 发送成功 to %s", to_user_id[:20])
                     else:
-                        logger.warning(
-                            "[WeChatAgent] 语音文件发送被拒: ret=%s",
-                            ret,
+                        logger.warning("[WeChatAgent] voice_item 被拒 ret=%s", ret)
+                except Exception:
+                    logger.warning("[WeChatAgent] voice_item 异常", exc_info=True)
+
+                # voice_item 不支持 → 回退 file_item（音频文件，点击播放）
+                if not audio_sent:
+                    try:
+                        filename = f"mia_voice.{audio_format}"
+                        resp = await self._client.sendmessage(
+                            {
+                                "to_user_id": to_user_id,
+                                "client_id": str(uuid.uuid4()),
+                                "message_type": 2,
+                                "message_state": 2,
+                                "context_token": context_token,
+                                "item_list": [{
+                                    "type": 4,  # file_item
+                                    "file_item": {
+                                        "media": {
+                                            "encrypt_query_param": upload_result["encrypt_query_param"],
+                                            "aes_key": upload_result["aes_key_b64"],
+                                            "encrypt_type": 1,
+                                        },
+                                        "file_name": filename,
+                                        "len": str(upload_result["filesize"]),
+                                    },
+                                }],
+                            },
                         )
+                        ret = resp.get("ret", -1) if isinstance(resp, dict) else -1
+                        if ret == 0:
+                            audio_sent = True
+                            logger.info("[WeChatAgent] file_item 回退成功 to %s", to_user_id[:20])
+                    except Exception:
+                        logger.exception("[WeChatAgent] file_item 回退也失败")
                 except Exception as upload_err:
                     logger.warning(
                         "[WeChatAgent] 语音上传/发送失败: %s",
