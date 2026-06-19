@@ -123,25 +123,20 @@ class MemoryBrowser:
         """
         import questionary
 
-        # ─── 1. 全量加载，按日期分组 ─────────────────
+        # ─── 1. 全量加载 (单次遍历所有日期) ─────────
         self._all_entries = []
         self._id_map = {}
-        # 日期顺序 (按日期降序，最新的在前)
+        entry_date: dict[str, str] = {}
         dates = sorted(self.store.get_index_summaries().keys(), reverse=True)
         for date in dates:
             day_entries = self.store.load_day(date)
-            self._all_entries.extend(day_entries)
-        for e in self._all_entries:
-            self._id_map[e.id] = e
+            for e in day_entries:
+                self._all_entries.append(e)
+                self._id_map[e.id] = e
+                entry_date[e.id] = date
 
         total_persistent = len(self._all_entries)
         total_working = len(self.working_entries)
-
-        # 构建 entry → date 映射 (用于显示日期分组)
-        entry_date: dict[str, str] = {}
-        for date in dates:
-            for e in self.store.load_day(date):
-                entry_date[e.id] = date
 
         # ─── 2. 展示临时记忆 ─────────────────────────
         if self.working_entries:
@@ -300,15 +295,14 @@ class MemoryBrowser:
         interactive = _is_interactive()
         loop = asyncio.get_event_loop()
 
-        # 全量加载，按日期分组
+        # 全量加载 (单次遍历)
         all_persistent = []
         dates = sorted(self.store.get_index_summaries().keys(), reverse=True)
         entry_date: dict[str, str] = {}
         for date in dates:
-            day_entries = self.store.load_day(date)
-            for e in day_entries:
+            for e in self.store.load_day(date):
+                all_persistent.append(e)
                 entry_date[e.id] = date
-            all_persistent.extend(day_entries)
         persistent_total = len(all_persistent)
         working_total = len(self.working_entries)
         total = persistent_total + working_total
