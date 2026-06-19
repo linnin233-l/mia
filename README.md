@@ -8,34 +8,20 @@
 
 ```mermaid
 flowchart LR
-    subgraph Input[" 输入渠道 "]
-        CLI
-        HTTP
-        WX[微信]
-    end
+    CLI --> RAW[RAW_INPUT]
+    WX[微信] --> WR[WeChatReceiver<br/>长轮询+SILK] --> RAW
 
-    subgraph Pipeline[" MIA Agent 管线 "]
-        R[Receiver<br/>多模态理解]
-        M[MemoryAgent<br/>两级记忆]
-        S[Scheduler<br/>LLM 决策]
-        T[TaskAgent<br/>工具执行]
-    end
+    RAW --> R[Receiver<br/>多模态理解]
+    R -->|USER_INTENT| Mem[MemoryAgent<br/>两级记忆]
+    Mem -->|+memory_context| Sch[Scheduler<br/>LLM 决策+渠道路由]
+    Sch -->|reply| SD[SenderAgent<br/>终端文本/语音]
+    Sch -->|reply| WS[WeChatSender<br/>TTS+CDN→微信]
+    Sch -->|execute_task| TA[TaskAgent<br/>工具调用]
+    TA -->|TASK_RESULT| Sch
 
-    subgraph Output[" 输出渠道 "]
-        SD[SenderAgent<br/>终端文本/语音]
-        WA[WeChatAgent<br/>微信消息/文件]
-    end
-
-    CLI --> R
-    HTTP --> R
-    WX --> WA --> R
-    R --> M --> S
-    S -->|reply| SD
-    S -->|execute_task| T
-    T -->|result| S
-    S -->|reply| WA
+    Bus((MessageBus<br/>镜像投递)) -.-> Mem
 ```
-> 6 个 Agent，1 条 MessageBus。输入多渠道，输出回原路（渠道感知路由）。
+> 7 个 Agent，1 条 MessageBus。输入多渠道，输出回原路（渠道感知路由）。
 
 ## 特性
 
