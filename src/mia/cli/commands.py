@@ -702,6 +702,391 @@ async def _config_sender_agent(
 
 
 # ═══════════════════════════════════════════════════════════════
+# /interface — 消息接口管理（查看绑定、重新绑定、删除绑定）
+# ═══════════════════════════════════════════════════════════════
+
+async def handle_interface_command(runtime: RuntimeConfig) -> CommandAction:
+    """/interface 命令 — 消息接口绑定管理
+
+    与 /channel 的职责分离:
+      - /channel: 开关渠道（是否启用微信收发）
+      - /interface: 管理绑定凭证（查看 token、重新扫码登录、删除绑定）
+
+    第一级: 选择消息接口（当前只有微信，未来可扩展 Telegram/Discord 等）
+    第二级: 查看 token 详情 / 重新绑定 / 删除绑定
+    """
+    from pathlib import Path
+
+    from mia.config import get_config
+
+    config = get_config()
+    action = CommandAction.NONE
+
+    while True:
+        # ─── 第一级: 选择消息接口 ──────────────────────
+        interfaces = _get_available_interfaces(runtime, config)
+        choices = [questionary.Choice(title=iface["label"], value=iface["id"]) for iface in interfaces]
+        choices.append(questionary.Choice(title="← 返回", value="__back__"))
+
+        choice = await questionary.select(
+            "选择要管理的消息接口:",
+            choices=choices,
+        ).ask_async()
+
+        if choice is None or choice == "__back__":
+            return action
+
+        # ─── 第二级: 接口详情管理 ──────────────────────
+        if choice == "wechat":
+            iface_action = await _handle_wechat_interface(runtime, config)
+            if iface_action == CommandAction.RECONFIGURE_WECHAT:
+                action = CommandAction.RECONFIGURE_WECHAT
+
+    return action
+
+
+def _get_available_interfaces(runtime: RuntimeConfig, config) -> list[dict]:
+    """扫描可用的消息接口列表
+
+    Returns:
+        列表，每项包含 id, label（含状态信息），用于第一级菜单展示
+    """
+    from pathlib import Path
+
+    # ─── 微信接口 ──────────────────────────────────
+    token_file = _get_wechat_token_file(config)
+    has_token_file = token_file.exists()
+    has_env_token = bool(config.wechat.bot_token)
+    has_saved_token = has_token_file or has_env_token
+    channel_enabled = runtime.wechat_enabled
+
+    # 状态描述
+    if channel_enabled:
+        if has_saved_token:
+            status = "✓ 已启用 · 已绑定"
+        else:
+            status = "✓ 已启用 · 未绑定 (需扫码)"
+    else:
+        if has_saved_token:
+            status = "✗ 未启用 · 已绑定"
+        else:
+            status = "✗ 未启用 · 未绑定"
+
+    wechat_label = f"微信 (iLink Bot)  {status}"
+
+    interfaces = [
+        {"id": "wechat", "label": wechat_label},
+        # 未来扩展点: Telegram, Discord, Slack...
+    ]
+
+    return interfaces
+
+
+def _get_wechat_token_file(config) -> Path:
+    """获取微信 bot_token 持久化文件路径"""
+    from pathlib import Path
+
+    token_file_str = config.wechat.bot_token_file
+    if token_file_str:
+        return Path(token_file_str).expanduser()
+    return Path.home() / ".mia" / "wechat_bot_token"
+
+
+def _get_wechat_context_tokens_file(config) -> Path:
+    """获取微信 context_tokens 持久化文件路径"""
+    token_file = _get_wechat_token_file(config)
+    return token_file.parent / "wechat_context_tokens.json"
+
+
+async def _handle_wechat_interface(
+    runtime: RuntimeConfig, config,
+) -> CommandAction:
+    """微信接口详情管理 — 查看信息 / 重新绑定 / 删除绑定
+
+    二级子菜单，展示 token 文件状态并提供操作选项。
+    """
+    from datetime import datetime
+    from pathlib import Path
+
+    token_file = _get_wechat_token_file(config)
+    ctx_file = _get_wechat_context_tokens_file(config)
+
+    action = CommandAction.NONE
+
+    while True:
+        # 每次进入都重新扫描文件状态
+        _print_wechat_status(runtime, config, token_file, ctx_file)
+
+        # 构建菜单
+        menu = _build_wechat_interface_menu(runtime, config, token_file)
+
+        choice = await questionary.select(
+            "选择操作:",
+            choices=menu,
+        ).ask_async()
+
+        if choice is None or choice == "__back__":
+            return action
+
+        if choice == "__rebind__":
+            result = await _do_wechat_rebind(config, token_file)
+            if result == CommandAction.RECONFIGURE_WECHAT:
+                action = CommandAction.RECONFIGURE_WECHAT
+
+        elif choice == "__delete__":
+            result = await _do_wechat_delete_binding(config, token_file, ctx_file)
+            if result == CommandAction.RECONFIGURE_WECHAT:
+                action = CommandAction.RECONFIGURE_WECHAT
+                # 删除后回到上级，因为状态已完全改变
+                print()
+                return action
+
+    return action
+
+
+def _print_wechat_status(runtime, config, token_file, ctx_file) -> None:
+    """打印微信接口当前状态信息"""
+    from datetime import datetime
+
+    print()
+    print(f"  {'─'*50}")
+    print(f"  微信接口 (iLink Bot)")
+    print(f"  {'─'*50}")
+
+    # ─── 渠道开关状态 ──────────────────────────────
+    channel_status = "✓ 已启用" if runtime.wechat_enabled else "✗ 未启用"
+    print(f"  渠道状态:    {channel_status}")
+    print()
+
+    # ─── Token 文件信息 ────────────────────────────
+    print(f"  ── Bot Token ──")
+    if token_file.exists():
+        try:
+            stat = token_file.stat()
+            mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            size_kb = stat.st_size / 1024
+            # 读 token 并掩码
+            token_raw = token_file.read_text(encoding="utf-8").strip()
+            print(f"  文件路径:    {token_file}")
+            print(f"  文件大小:    {size_kb:.1f} KB")
+            print(f"  最后修改:    {mtime}")
+            print(f"  Token:       {_mask_key(token_raw)}")
+        except Exception:
+            print(f"  文件路径:    {token_file}")
+            print(f"  \033[33m  ⚠ 无法读取 token 文件\033[0m")
+    else:
+        print(f"  状态:        \033[90m未保存 (无 token 文件)\033[0m")
+        print(f"  预期路径:    {token_file}")
+
+    # 环境变量 token 提示
+    if config.wechat.bot_token and not token_file.exists():
+        print(f"  Token:       {_mask_key(config.wechat.bot_token)} (来自环境变量 MIA_WECHAT_BOT_TOKEN)")
+
+    print()
+
+    # ─── Context Tokens 文件信息 ────────────────────
+    print(f"  ── Context Tokens (用户路由缓存) ──")
+    _print_context_tokens_status(ctx_file)
+
+
+def _print_context_tokens_status(ctx_file) -> None:
+    """打印 context_tokens 文件状态"""
+    from datetime import datetime
+    import json
+
+    if ctx_file.exists():
+        try:
+            stat = ctx_file.stat()
+            mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            size_kb = stat.st_size / 1024
+            data = json.loads(ctx_file.read_text(encoding="utf-8"))
+            user_count = len(data) if isinstance(data, dict) else 0
+            print(f"  文件路径:    {ctx_file}")
+            print(f"  用户数:      {user_count} 个活跃用户")
+            print(f"  文件大小:    {size_kb:.1f} KB")
+            print(f"  最后修改:    {mtime}")
+        except Exception:
+            print(f"  文件路径:    {ctx_file}")
+            print(f"  \033[33m  ⚠ 无法读取 context tokens 文件\033[0m")
+    else:
+        print(f"  状态:        \033[90m无缓存 (暂无活跃微信用户)\033[0m")
+        print(f"  预期路径:    {ctx_file}")
+
+
+def _build_wechat_interface_menu(
+    runtime, config, token_file,
+) -> list:
+    """构建微信接口管理菜单
+
+    根据当前状态动态生成可用操作:
+      - 已绑定 → 可查看 / 重新绑定 / 删除绑定
+      - 未绑定 → 可扫码绑定
+    """
+    has_token = token_file.exists() or bool(config.wechat.bot_token)
+    menu = []
+
+    if has_token:
+        menu.append(questionary.Choice(
+            title="[重新绑定] 删除旧 token 并重新扫码登录",
+            value="__rebind__",
+        ))
+        menu.append(questionary.Choice(
+            title="[删除绑定] 删除已保存的 token（将无法收发微信消息）",
+            value="__delete__",
+        ))
+    else:
+        menu.append(questionary.Choice(
+            title="[扫码绑定] 使用微信扫描 QR 码登录 iLink Bot",
+            value="__rebind__",
+        ))
+
+    menu.append(questionary.Choice(title="← 返回上级", value="__back__"))
+    return menu
+
+
+async def _do_wechat_rebind(config, token_file) -> CommandAction:
+    """执行微信重新绑定 — 删除旧 token → QR 码扫码登录
+
+    创建独立的 ILinkClient 进行 QR 码登录流程，
+    不依赖 WeChatReceiverAgent 的存在。
+    """
+    from mia.channels.wechat.client import ILinkClient
+
+    # 1. 删除旧 token 文件（如果存在）
+    if token_file.exists():
+        try:
+            token_file.unlink()
+            print(f"  ✓ 已删除旧 token 文件: {token_file}")
+        except OSError as e:
+            print(f"  ⚠ 无法删除旧 token 文件: {e}")
+
+    # 2. 清除环境变量中的 token（如果有）
+    config.wechat.bot_token = ""
+
+    # 3. 开始 QR 码登录
+    print()
+    print(f"  {'─'*50}")
+    print(f"  \033[1;33m  MIA 微信登录 — 请使用手机微信扫描二维码\033[0m")
+    print(f"  {'─'*50}")
+    print()
+
+    client = ILinkClient(
+        bot_token="",
+        base_url=config.wechat.base_url or "https://ilinkai.weixin.qq.com",
+    )
+    await client.start()
+
+    try:
+        # 获取二维码
+        qr_data = await client.get_bot_qrcode()
+        qrcode = qr_data.get("qrcode", "")
+        qrcode_url = qr_data.get("url") or qr_data.get("qrcode_img_content", "")
+
+        # 显示二维码 URL（终端环境下用户需要手动访问）
+        print(f"  QR 码 URL: {qrcode_url or '(请查看日志)'}")
+        print()
+        print(f"  \033[90m等待扫码中... (最长 300 秒，按 Ctrl+C 取消)\033[0m")
+
+        # 轮询等待扫码确认
+        token, base_url = await client.wait_for_login(qrcode)
+
+        # 4. 保存新 token
+        config.wechat.bot_token = token
+        _save_wechat_token(token_file, token)
+
+        # 5. 更新 base_url（如果服务端返回了新的）
+        if base_url and base_url.rstrip("/") != config.wechat.base_url:
+            config.wechat.base_url = base_url.rstrip("/")
+            print(f"  ℹ API 基础 URL 已更新: {config.wechat.base_url}")
+
+        print()
+        print(f"  \033[32m✓ 微信绑定成功！\033[0m")
+        print(f"  Token 已保存至: {token_file}")
+        print(f"  Token: {_mask_key(token)}")
+
+        return CommandAction.RECONFIGURE_WECHAT
+
+    except asyncio.CancelledError:
+        print(f"\n  \033[33m⚠ 扫码登录已取消\033[0m")
+        return CommandAction.NONE
+    except TimeoutError:
+        print(f"\n  \033[31m✗ QR 码登录超时（300 秒未扫码）\033[0m")
+        return CommandAction.NONE
+    except Exception as e:
+        print(f"\n  \033[31m✗ 登录失败: {e}\033[0m")
+        return CommandAction.NONE
+    finally:
+        await client.stop()
+
+
+async def _do_wechat_delete_binding(
+    config, token_file, ctx_file,
+) -> CommandAction:
+    """删除微信绑定 — 清除 token 文件和 context tokens 缓存
+
+    需要用户确认后执行。删除后微信渠道将无法收发消息。
+    """
+    # 确认操作
+    confirm = await questionary.confirm(
+        "确认删除微信绑定？\n"
+        "  - 将删除已保存的 Bot Token\n"
+        "  - 将清除用户路由缓存 (context tokens)\n"
+        "  - 微信渠道将立即无法收发消息\n"
+        "  - 如需恢复，需要重新扫码登录\n"
+        "\n"
+        "确认删除？",
+        default=False,
+    ).ask_async()
+
+    if not confirm:
+        print(f"  \033[90m已取消\033[0m")
+        return CommandAction.NONE
+
+    # 删除 token 文件
+    deleted_count = 0
+    if token_file.exists():
+        try:
+            token_file.unlink()
+            print(f"  ✓ 已删除: {token_file}")
+            deleted_count += 1
+        except OSError as e:
+            print(f"  \033[31m✗ 无法删除 token 文件: {e}\033[0m")
+
+    # 删除 context tokens 文件
+    if ctx_file.exists():
+        try:
+            ctx_file.unlink()
+            print(f"  ✓ 已删除: {ctx_file}")
+            deleted_count += 1
+        except OSError as e:
+            print(f"  \033[31m✗ 无法删除 context tokens 文件: {e}\033[0m")
+
+    # 清除环境变量中的 token
+    config.wechat.bot_token = ""
+
+    if deleted_count > 0:
+        print()
+        print(f"  \033[32m✓ 微信绑定已删除\033[0m")
+        # 如果渠道已启用，需要关闭（没有 token 无法工作）
+        if runtime.wechat_enabled:
+            print(f"  \033[33mℹ 微信渠道仍处于启用状态，将尝试 QR 码登录\033[0m")
+        return CommandAction.RECONFIGURE_WECHAT
+    else:
+        print(f"  \033[90m没有需要删除的文件\033[0m")
+        return CommandAction.NONE
+
+
+def _save_wechat_token(token_file, token: str) -> None:
+    """持久化 bot_token 到文件"""
+    try:
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(token, encoding="utf-8")
+    except OSError as e:
+        print(f"  \033[33m⚠ 无法保存 token 到文件: {e}\033[0m")
+        print(f"  \033[33m  Token 仅在当前会话有效，重启后需要重新登录\033[0m")
+
+
+# ═══════════════════════════════════════════════════════════════
 # /channel — 通信渠道配置
 # ═══════════════════════════════════════════════════════════════
 
@@ -783,5 +1168,243 @@ async def handle_channel_command(runtime: RuntimeConfig) -> CommandAction:
                 # Token 变更不会自动生效，需要重建 WeChat Agent
                 if runtime.wechat_enabled:
                     return CommandAction.RECONFIGURE_WECHAT
+
+    return CommandAction.NONE
+
+
+# ═══════════════════════════════════════════════════════════════
+# /session — 会话管理（列表/切换/新建/重命名/删除）
+# ═══════════════════════════════════════════════════════════════
+
+async def handle_session_command(
+    runtime,
+    session_manager,
+    memory_agent,
+) -> CommandAction:
+    """/session 命令 — 会话管理
+
+    功能:
+      1. 显示当前活跃会话和所有会话列表
+      2. 切换到其他会话（自动保存当前、加载目标）
+      3. 创建新 CLI 会话
+      4. 重命名会话
+      5. 删除会话
+
+    Returns:
+        CommandAction.NONE — 会话切换由命令内部处理，不需要重建 Agent
+    """
+    while True:
+        current = session_manager.get_current()
+        all_sessions = session_manager.list_sessions()
+
+        # ─── 显示当前会话信息 ────────────────────────
+        print()
+        print(f"  {'─'*55}")
+        if current:
+            source_display = {
+                "cli": "CLI 终端",
+                "wechat": "微信",
+                "api": "HTTP API",
+            }.get(current.source, current.source)
+            print(
+                f"  当前会话: \033[36m{current.name}\033[0m "
+                f"(\033[90m{current.session_id}\033[0m)"
+            )
+            print(
+                f"  来源: {source_display}  ·  "
+                f"对话轮次: {current.turn_count}  ·  "
+                f"活跃: {current.updated_at[:16] if current.updated_at else '未知'}"
+            )
+        else:
+            print(f"  当前会话: \033[33m(无)\033[0m")
+        print(f"  {'─'*55}")
+        print()
+
+        # ─── 构建菜单 ─────────────────────────────────
+        choices = []
+
+        # 会话列表
+        choices.append(questionary.Separator("  ── 会话列表 ──"))
+        for s in all_sessions:
+            is_current = (current and s.session_id == current.session_id)
+            marker = " ◀ 当前" if is_current else ""
+            source_tag = {
+                "cli": "",
+                "wechat": "[微信]",
+                "api": "[API]",
+            }.get(s.source, f"[{s.source}]")
+            label = (
+                f"{s.name:<22} {source_tag:<7} "
+                f"{s.turn_count}轮{marker}"
+            )
+            choices.append(questionary.Choice(
+                title=label,
+                value=f"__switch__{s.session_id}",
+            ))
+
+        # 操作
+        choices.append(questionary.Separator("  ── 操作 ──"))
+        choices.append(questionary.Choice(
+            title="[新建] 创建新 CLI 会话",
+            value="__create__",
+        ))
+        if current:
+            choices.append(questionary.Choice(
+                title=f"[重命名] 重命名当前会话 '{current.name}'",
+                value="__rename__",
+            ))
+            if len(all_sessions) > 1:
+                choices.append(questionary.Choice(
+                    title=f"[删除] 删除当前会话 '{current.name}'",
+                    value="__delete__",
+                ))
+
+        choices.append(questionary.Choice(title="← 返回", value="__back__"))
+
+        choice = await questionary.select(
+            "选择会话或操作:",
+            choices=choices,
+        ).ask_async()
+
+        if choice is None or choice == "__back__":
+            return CommandAction.NONE
+
+        # ─── 切换会话 ──────────────────────────────────
+        if choice.startswith("__switch__"):
+            target_id = choice[len("__switch__"):]
+
+            # 已经是当前会话，跳过
+            if current and target_id == current.session_id:
+                continue
+
+            target_info = session_manager.get_session(target_id)
+            if not target_info:
+                print(f"  \033[33m会话不存在: {target_id}\033[0m")
+                continue
+
+            # 保存当前 → 清空 → 加载目标
+            await memory_agent.save_state()
+            memory_agent.clear_state()
+            session_manager.set_current(target_id)
+            await memory_agent.load_state(target_id)
+            print(f"  \033[32m✓\033[0m 已切换到会话: \033[36m{target_info.name}\033[0m")
+            print()
+            continue
+
+        # ─── 新建会话 ──────────────────────────────────
+        if choice == "__create__":
+            name = await questionary.text(
+                "输入新会话名称 (留空取消):",
+                default="",
+            ).ask_async()
+
+            if not name or not name.strip():
+                print(f"  \033[90m已取消\033[0m")
+                continue
+
+            clean_name = name.strip()[:50]
+            if ":" in clean_name:
+                print(f"  \033[33m会话名不能包含冒号（:），请重试\033[0m")
+                continue
+
+            # 创建新会话
+            new_session = session_manager.create_session(clean_name, source="cli")
+
+            # 保存当前 → 清空 → 加载新（空）会话
+            await memory_agent.save_state()
+            memory_agent.clear_state()
+            session_manager.set_current(new_session.session_id)
+            await memory_agent.load_state(new_session.session_id)
+            print(f"  \033[32m✓\033[0m 已创建并切换到会话: \033[36m{clean_name}\033[0m")
+            print()
+            continue
+
+        # ─── 重命名会话 ────────────────────────────────
+        if choice == "__rename__":
+            if not current:
+                print(f"  \033[33m没有活跃会话可重命名\033[0m")
+                continue
+
+            # WeChat 会话不允许重命名（名称固定）
+            if current.source == "wechat":
+                print(f"  \033[33m微信会话自动命名，不可手动重命名\033[0m")
+                continue
+
+            new_name = await questionary.text(
+                f"输入新名称 (当前: {current.name}, 留空取消):",
+                default=current.name,
+            ).ask_async()
+
+            if not new_name or not new_name.strip():
+                print(f"  \033[90m已取消\033[0m")
+                continue
+
+            clean_name = new_name.strip()[:50]
+            if clean_name == current.name:
+                print(f"  \033[90m名称未变化\033[0m")
+                continue
+
+            if ":" in clean_name:
+                print(f"  \033[33m会话名不能包含冒号（:），请重试\033[0m")
+                continue
+
+            if session_manager.rename_session(current.session_id, clean_name):
+                print(f"  \033[32m✓\033[0m 已重命名为: \033[36m{clean_name}\033[0m")
+            else:
+                print(f"  \033[31m✗ 重命名失败\033[0m")
+            print()
+            continue
+
+        # ─── 删除会话 ──────────────────────────────────
+        if choice == "__delete__":
+            if not current:
+                print(f"  \033[33m没有活跃会话可删除\033[0m")
+                continue
+
+            if len(all_sessions) <= 1:
+                print(f"  \033[33m无法删除最后一个会话\033[0m")
+                continue
+
+            # WeChat 会话不允许手动删除（自动管理）
+            if current.source == "wechat":
+                print(f"  \033[33m微信会话由系统自动管理，不可手动删除\033[0m")
+                continue
+
+            confirm = await questionary.confirm(
+                f"确认删除会话 '\033[31m{current.name}\033[0m'？\n"
+                f"\n"
+                f"  · 对话历史 (\033[33m{current.turn_count}轮\033[0m) 将被永久删除\n"
+                f"  · 临时记忆将被清除\n"
+                f"  · 持久知识 (MemoryStore) 不受影响\n"
+                f"  · 此操作不可撤销\n"
+                f"\n"
+                f"确认删除？",
+                default=False,
+            ).ask_async()
+
+            if not confirm:
+                print(f"  \033[90m已取消\033[0m")
+                continue
+
+            # 保存当前状态 → 删除会话 → 切换到剩余会话中最新的
+            await memory_agent.save_state()
+            memory_agent.clear_state()
+            deleted_id = current.session_id
+            deleted_name = current.name
+
+            if not session_manager.delete_session(deleted_id):
+                print(f"  \033[31m✗ 删除失败\033[0m")
+                continue
+
+            # 自动切换到剩余会话中最新的
+            remaining = session_manager.list_sessions()
+            if remaining:
+                fallback = remaining[0]
+                session_manager.set_current(fallback.session_id)
+                await memory_agent.load_state(fallback.session_id)
+                print(f"  \033[32m✓\033[0m 已删除 '\033[31m{deleted_name}\033[0m'，"
+                      f"自动切换到: \033[36m{fallback.name}\033[0m")
+            print()
+            continue
 
     return CommandAction.NONE

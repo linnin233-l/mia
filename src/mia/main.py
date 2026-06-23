@@ -33,6 +33,7 @@ from mia.config import get_config
 from mia.bus.bus import MessageBus
 from mia.bus.message import Message, MessageType
 from mia.model_registry import create_provider
+from mia.session import SessionManager
 from mia.agents.receiver import ReceiverAgent
 from mia.agents.scheduler import SchedulerAgent
 from mia.agents.sender import SenderAgent
@@ -45,6 +46,8 @@ from mia.cli.commands import (
     handle_model_command,
     handle_agent_command,
     handle_channel_command,
+    handle_interface_command,
+    handle_session_command,
     CommandAction,
 )
 
@@ -322,9 +325,22 @@ async def _reconfigure_agents(
     bus: MessageBus,
     config,
     enable_wechat: bool,
+    session_manager: Optional[SessionManager] = None,
 ) -> tuple[list, list]:
-    """根据当前 RuntimeConfig 重建所有 Agent"""
+    """根据当前 RuntimeConfig 重建所有 Agent
+
+    会话状态保护:
+      1. 重建前保存 MemoryAgent 的会话状态
+      2. 重建后将状态恢复到新的 MemoryAgent 实例
+      3. session_manager=None 时跳过（兼容 run_agent_pipeline）
+    """
     rt = config.runtime
+
+    # 0. 保存旧 MemoryAgent 的会话状态（避免重建时丢失）
+    old_memory = _find_agent(agent_list, MemoryAgent)
+    if old_memory and session_manager:
+        await old_memory.save_state()
+    current_session_id = session_manager.get_current_session_id() if session_manager else None
 
     # 1. 停止旧 Agent
     for agent in agent_list:
@@ -375,6 +391,7 @@ async def _reconfigure_agents(
         model=rt.memory_model,
         fallback_provider=deepseek if rt.memory_fallback else None,
         fallback_model=rt.memory_fallback if rt.memory_fallback else None,
+        session_manager=session_manager,
     )
 
     agent_list.extend([receiver, memory_agent, scheduler, sender, task_agent])
@@ -406,6 +423,12 @@ async def _reconfigure_agents(
     for agent in agent_list:
         await agent.start()
     await asyncio.sleep(0.3)
+    # 恢复会话状态（在 Agent 启动后、run() 前）
+    if session_manager and current_session_id:
+        new_memory = _find_agent(agent_list, MemoryAgent)
+        if new_memory:
+            await new_memory.load_state(current_session_id)
+            session_manager.set_current(current_session_id)
     for agent in agent_list:
         tasks.append(asyncio.create_task(agent.run()))
 
@@ -476,6 +499,15 @@ async def run_cli_interactive(enable_wechat: bool = False) -> None:
 
     config = get_config()
     rt = config.runtime
+
+    # ─── 会话管理 ──────────────────────────────
+    session_manager = SessionManager()
+    session_manager.load_index()
+    # 确保有默认 CLI 会话
+    default_session = session_manager.get_or_create_default()
+    session_manager.set_current(default_session.session_id)
+    print(f"  \033[90m会话: {default_session.name} ({default_session.session_id})\033[0m")
+
     bus = MessageBus(max_queue_size=100)
     await bus.start()
 
@@ -530,6 +562,7 @@ async def run_cli_interactive(enable_wechat: bool = False) -> None:
         model=rt.memory_model,
         fallback_provider=deepseek if rt.memory_fallback else None,
         fallback_model=rt.memory_fallback if rt.memory_fallback else None,
+        session_manager=session_manager,
     )
 
     # WeChat 通信渠道 (可选) — 收发分离
@@ -617,7 +650,9 @@ async def run_cli_interactive(enable_wechat: bool = False) -> None:
   /help, /h         — 显示帮助
   /model            — 模型平台配置 (API Key + 模型开关)
   /agent            — Agent 模型分配 (每个Agent独立选模型)
-  /channel          — 通信渠道配置 (微信等)
+  /channel          — 通信渠道开关 (启用/禁用微信)
+  /interface        — 消息接口绑定管理 (查看token/重新扫码/删除绑定)
+  /session          — 会话管理 (列表/切换/新建/重命名/删除)
   /compact          — 压缩对话历史 (将多轮对话总结为摘要，节省 token)
   /verbose          — 切换详细日志 (默认开启，关闭后只显示概要)
   /memory           — 显示当前对话记忆状态
@@ -631,6 +666,7 @@ async def run_cli_interactive(enable_wechat: bool = False) -> None:
   You > /model          (配置 API Key 和模型)
   You > /agent          (给每个 Agent 分配模型)
   You > /channel        (开关微信渠道)
+  You > /interface      (查看微信绑定状态)
   You > /compact
 """)
                 continue
@@ -732,6 +768,7 @@ async def run_cli_interactive(enable_wechat: bool = False) -> None:
                     agent_list, tasks = await _reconfigure_agents(
                         agent_list, tasks, bus, config,
                         enable_wechat=rt.wechat_enabled,
+                        session_manager=session_manager,
                     )
                     memory_agent = _find_agent(agent_list, MemoryAgent)
                 continue
@@ -743,6 +780,7 @@ async def run_cli_interactive(enable_wechat: bool = False) -> None:
                     agent_list, tasks = await _reconfigure_agents(
                         agent_list, tasks, bus, config,
                         enable_wechat=rt.wechat_enabled,
+                        session_manager=session_manager,
                     )
                     memory_agent = _find_agent(agent_list, MemoryAgent)
                 continue
@@ -754,8 +792,28 @@ async def run_cli_interactive(enable_wechat: bool = False) -> None:
                     agent_list, tasks = await _reconfigure_agents(
                         agent_list, tasks, bus, config,
                         enable_wechat=rt.wechat_enabled,
+                        session_manager=session_manager,
                     )
                     memory_agent = _find_agent(agent_list, MemoryAgent)
+                continue
+
+            # /interface — 消息接口绑定管理 (查看token/重新绑定/删除绑定)
+            if user_input.lower() == "/interface":
+                action = await handle_interface_command(rt)
+                if action == CommandAction.RECONFIGURE_WECHAT:
+                    agent_list, tasks = await _reconfigure_agents(
+                        agent_list, tasks, bus, config,
+                        enable_wechat=rt.wechat_enabled,
+                        session_manager=session_manager,
+                    )
+                    memory_agent = _find_agent(agent_list, MemoryAgent)
+                continue
+
+            # /session — 会话管理 (列表/切换/新建/重命名/删除)
+            if user_input.lower() == "/session":
+                mem = _find_agent(agent_list, MemoryAgent) or memory_agent
+                if mem:
+                    await handle_session_command(rt, session_manager, mem)
                 continue
 
             # ─── 拦截所有以 / 开头的未知命令，不进入 Agent 链 ───
@@ -763,7 +821,7 @@ async def run_cli_interactive(enable_wechat: bool = False) -> None:
                 # 尝试模糊匹配给出建议
                 known_commands = ["/quit", "/exit", "/q", "/help", "/h", "/compact",
                                   "/verbose", "/memory", "/image", "/voice", "/record",
-                                  "/model", "/agent", "/channel"]
+                                  "/model", "/agent", "/channel", "/interface", "/session"]
                 cmd_lower = user_input.lower()
                 suggestions = [c for c in known_commands if c.startswith(cmd_lower[:3])]
                 if suggestions:
@@ -774,7 +832,7 @@ async def run_cli_interactive(enable_wechat: bool = False) -> None:
                 continue
 
             # ─── 本轮对话 ────────────────────────────
-            session_id = uuid.uuid4().hex[:12]
+            session_id = session_manager.get_current_session_id() or uuid.uuid4().hex[:12]
 
             # 注入 RAW_INPUT 到持久系统
             raw_msg = Message(

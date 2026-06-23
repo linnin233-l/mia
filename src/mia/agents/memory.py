@@ -44,6 +44,9 @@ from mia.memory.store import (
 )
 from mia.memory.retriever import MemoryRetriever
 from mia.providers.base import BaseProvider
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from mia.session.manager import SessionManager, SessionState
 
 
 # ─── Level 1: 临时知识提取 prompt (轻量级, 从单轮对话提取原子知识) ───
@@ -135,6 +138,7 @@ class MemoryAgent(BaseAgent):
         fallback_provider: Optional[BaseProvider] = None,
         fallback_model: Optional[str] = None,
         enable_auto_store: bool = True,
+        session_manager: Optional["SessionManager"] = None,
     ):
         """
         Args:
@@ -145,6 +149,7 @@ class MemoryAgent(BaseAgent):
             fallback_provider: 备选 Provider
             fallback_model: 备选模型名
             enable_auto_store: 是否启用自动知识提取 (默认 True)
+            session_manager: 会话管理器 (可选，用于多会话切换)
         """
         super().__init__(name="memory_agent", bus=bus)
         self.provider = provider
@@ -152,6 +157,10 @@ class MemoryAgent(BaseAgent):
         self.fallback_provider = fallback_provider
         self.fallback_model = fallback_model
         self.enable_auto_store = enable_auto_store
+
+        # ─── 会话管理 ────────────────────────────
+        self._session_manager = session_manager
+        self._session_loaded: bool = False  # 防止未加载就保存
 
         # ─── 读取配置 ────────────────────────────
         try:
@@ -191,9 +200,24 @@ class MemoryAgent(BaseAgent):
     # ─── 生命周期 ────────────────────────────────────
 
     async def on_start(self) -> None:
-        """启动时加载持久化知识"""
+        """启动时加载持久化知识 + 恢复上次活跃会话"""
         self.store.load()
         self._current_date = _today_str()
+
+        # ─── 恢复上次活跃会话状态 ──────────────────
+        if self._session_manager:
+            last_active = self._session_manager.get_current_session_id()
+            if last_active:
+                await self.load_state(last_active)
+                logger.info(
+                    "[MemoryAgent] 已恢复会话: %s", last_active,
+                )
+            else:
+                # 没有活跃会话 → 确保有默认会话 → 初始化
+                default = self._session_manager.get_or_create_default()
+                self._session_manager.set_current(default.session_id)
+                self._session_loaded = True
+
         logger.info(
             "[MemoryAgent] 已就绪, 持久知识: {} 条, 临时记忆: {} 条, "
             "对话历史: {} 轮, 历史上限: {} 轮, provider={}",
@@ -205,11 +229,15 @@ class MemoryAgent(BaseAgent):
         )
 
     async def on_stop(self) -> None:
-        """关闭时强制落盘 — 临时记忆 → 二级持久记忆
+        """关闭时强制落盘 — 会话状态 + 临时记忆 → 二级持久记忆
 
-        防止进程退出时 Level 1 临时记忆丢失。
+        1. 先保存会话状态（对话历史 + 临时记忆 → 磁盘）
+        2. 再触发 L1→L2 合并（临时记忆 → 全局知识库）
         _consolidate_daily() 自带 30s 超时 + _fallback_persist() 兜底。
         """
+        # 保存会话状态
+        await self.save_state()
+
         if self._working_memory or self._daily_buffer:
             logger.info(
                 "[MemoryAgent] 关闭中，落盘记忆 (临时{}条 / 对话{}轮)...",
@@ -235,6 +263,87 @@ class MemoryAgent(BaseAgent):
         else:
             logger.debug("[MemoryAgent] 忽略消息类型: {}", msg.msg_type)
 
+    # ─── 会话状态持久化 (SessionManager 集成) ──────────
+
+    def _build_session_state(self):
+        """从当前内存字段构建 SessionState（用于保存）"""
+        from mia.session.manager import SessionState
+        return SessionState(
+            session_id=self._pending_session_id or "",
+            conversation_history=list(self._conversation_history),
+            working_memory=[e.to_dict() for e in self._working_memory],
+            daily_buffer=list(self._daily_buffer),
+        )
+
+    def _restore_from_state(self, state) -> None:
+        """从 SessionState 恢复内存字段（用于加载）
+
+        working_memory 从 dict 反序列化为 KnowledgeEntry 对象。
+        """
+        self._conversation_history = list(state.conversation_history)
+        self._working_memory = [
+            KnowledgeEntry.from_dict(d) for d in state.working_memory
+        ]
+        self._daily_buffer = list(state.daily_buffer)
+
+    async def save_state(self) -> None:
+        """保存当前会话状态到 SessionManager
+
+        将 _conversation_history、_working_memory、_daily_buffer
+        序列化并写入磁盘。仅在 SessionManager 已配置且会话已加载时执行。
+        """
+        if not self._session_manager:
+            return
+        sid = self._session_manager.get_current_session_id()
+        if not sid or not self._session_loaded:
+            return
+        state = self._build_session_state()
+        self._session_manager.save_state(sid, state)
+        logger.debug(
+            "[MemoryAgent] 已保存会话状态: {} (hist={}, working={})",
+            sid,
+            len(self._conversation_history),
+            len(self._working_memory),
+        )
+
+    async def load_state(self, session_id: str) -> None:
+        """从 SessionManager 加载指定会话的状态
+
+        如果会话没有已保存的状态文件，则初始化空状态。
+        加载后自动标记 _session_loaded=True。
+
+        Args:
+            session_id: 要加载的会话 ID
+        """
+        if not self._session_manager:
+            return
+        state = self._session_manager.load_state(session_id)
+        if state:
+            self._restore_from_state(state)
+            logger.info(
+                "[MemoryAgent] 已加载会话状态: {} (hist={}, working={})",
+                session_id,
+                len(self._conversation_history),
+                len(self._working_memory),
+            )
+        else:
+            self.clear_state()
+        self._session_loaded = True
+
+    def clear_state(self) -> None:
+        """清空所有会话域的内存状态
+
+        切换会话时调用，确保新会话从空白状态开始。
+        """
+        self._conversation_history.clear()
+        self._working_memory.clear()
+        self._daily_buffer.clear()
+        self._pending_intent = None
+        self._pending_session_id = None
+        self._pending_original = None
+        self._session_loaded = False
+        logger.debug("[MemoryAgent] 会话状态已清空")
+
     # ─── USER_INTENT 处理 ────────────────────────────
 
     async def _on_user_intent(self, msg: Message) -> None:
@@ -257,6 +366,17 @@ class MemoryAgent(BaseAgent):
         self._pending_intent = intent
         self._pending_session_id = session_id
         self._pending_original = original
+
+        # ─── 会话自动切换 (WeChat ↔ CLI 交叉) ──────
+        if self._session_manager and session_id and session_id != self._session_manager.get_current_session_id():
+            # 保存当前会话状态再切换
+            await self.save_state()
+            # 注册新会话（WeChat 消息首次到达时自动创建会话记录）
+            if ":" in session_id:
+                self._session_manager.get_or_create_for_id(session_id, source="wechat")
+            # 加载目标会话状态
+            await self.load_state(session_id)
+            self._session_manager.set_current(session_id)
 
         # ─── 检测换日 ──────────────────────────────
         today = _today_str()
@@ -465,6 +585,9 @@ class MemoryAgent(BaseAgent):
         self._pending_intent = None
         self._pending_session_id = None
         self._pending_original = None
+
+        # ─── 5. 自动保存会话状态 ────────────────────
+        await self.save_state()
 
     # ═══════════════════════════════════════════════════════
     # Level 1: 临时知识提取
