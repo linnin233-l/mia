@@ -79,14 +79,6 @@ def parse_args():
         "--voice", "-v", type=str,
         help="语音文件路径 (配合 --query 使用)",
     )
-    parser.add_argument(
-        "--wechat", "-w", action="store_true",
-        help="启用微信通信渠道 (iLink Bot 长轮询 + QR 码登录)",
-    )
-    parser.add_argument(
-        "--telegram", "-t", action="store_true",
-        help="启用 Telegram 通信渠道 (Bot API 长轮询)",
-    )
     return parser.parse_args()
 
 
@@ -95,8 +87,6 @@ async def run_agent_pipeline(
     image_path: Optional[str] = None,
     voice_path: Optional[str] = None,
     timeout: float = 180.0,
-    enable_wechat: bool = False,
-    enable_telegram: bool = False,
 ) -> Optional[str]:
     """
     运行完整的 Agent 链路
@@ -106,7 +96,6 @@ async def run_agent_pipeline(
         image_path: 可选的图片路径
         voice_path: 可选的语音文件路径
         timeout: 整体超时秒数
-        enable_wechat: 是否启用微信通信渠道
 
     Returns:
         最终回复文本，超时返回 None
@@ -175,13 +164,13 @@ async def run_agent_pipeline(
     )
 
     # WeChat 通信渠道 (可选) — 收发分离
-    if enable_wechat:
+    if rt.wechat_enabled:
         wechat_receiver = WeChatReceiverAgent(
             bus=bus,
             bot_token=config.wechat.bot_token,
             bot_token_file=config.wechat.bot_token_file,
             base_url=config.wechat.base_url,
-            enabled=config.wechat.enabled or enable_wechat,
+            enabled=config.wechat.enabled or rt.wechat_enabled,
             media_dir=config.wechat.media_dir,
         )
         wechat_sender = WeChatSenderAgent(
@@ -195,7 +184,7 @@ async def run_agent_pipeline(
         )
 
     # Telegram 通信渠道 (可选) — 收发分离
-    if enable_telegram:
+    if rt.telegram_enabled:
         telegram_receiver = TelegramReceiverAgent(
             bus=bus,
             bot_token=config.telegram.bot_token,
@@ -218,9 +207,9 @@ async def run_agent_pipeline(
     print(f"  Scheduler: {rt.scheduler_model} (主) / {rt.scheduler_fallback or '无'} (备)")
     print(f"  Receiver: 视觉={'on' if rt.receiver_vision_enabled else 'off'} 语音={'on' if rt.receiver_audio_enabled else 'off'}")
     print(f"  Sender: TTS={'on' if rt.sender_tts_enabled else 'off'}")
-    if enable_wechat:
+    if rt.wechat_enabled:
         print(f"  WeChat: 已启用 (iLink Bot)")
-    if enable_telegram:
+    if rt.telegram_enabled:
         print(f"  Telegram: 已启用 (Bot API)")
     print(f"\033[1m{'='*50}\033[0m")
     print()
@@ -231,18 +220,18 @@ async def run_agent_pipeline(
     await scheduler.start()
     await sender.start()
     await task_agent.start()
-    if enable_wechat:
+    if rt.wechat_enabled:
         await wechat_receiver.start()
         await wechat_sender.start()
-    if enable_telegram:
+    if rt.telegram_enabled:
         await telegram_receiver.start()
         await telegram_sender.start()
 
     # 为每个 Agent 启动消息处理循环 (后台任务)
     agents = [receiver, memory_agent, scheduler, sender, task_agent]
-    if enable_wechat:
+    if rt.wechat_enabled:
         agents.extend([wechat_receiver, wechat_sender])
-    if enable_telegram:
+    if rt.telegram_enabled:
         agents.extend([telegram_receiver, telegram_sender])
     tasks: list[asyncio.Task] = []
     for agent in agents:
@@ -323,16 +312,12 @@ async def run_cli_query(
     query: str,
     image_path: Optional[str] = None,
     voice_path: Optional[str] = None,
-    enable_wechat: bool = False,
-    enable_telegram: bool = False,
 ) -> None:
     """运行单次 CLI 对话"""
     result = await run_agent_pipeline(
         query=query,
         image_path=image_path,
         voice_path=voice_path,
-        enable_wechat=enable_wechat,
-        enable_telegram=enable_telegram,
     )
 
     if result:
@@ -357,8 +342,6 @@ async def _reconfigure_agents(
     tasks: list,
     bus: MessageBus,
     config,
-    enable_wechat: bool,
-    enable_telegram: bool = False,
     session_manager: Optional[SessionManager] = None,
 ) -> tuple[list, list]:
     """根据当前 RuntimeConfig 重建所有 Agent
@@ -433,7 +416,7 @@ async def _reconfigure_agents(
     # 5. 微信渠道
     wechat_receiver = None
     wechat_sender = None
-    if enable_wechat:
+    if rt.wechat_enabled:
         wechat_receiver = WeChatReceiverAgent(
             bus=bus,
             bot_token=config.wechat.bot_token,
@@ -456,7 +439,7 @@ async def _reconfigure_agents(
     # 5b. Telegram 渠道
     telegram_receiver = None
     telegram_sender = None
-    if enable_telegram:
+    if rt.telegram_enabled:
         telegram_receiver = TelegramReceiverAgent(
             bus=bus,
             bot_token=config.telegram.bot_token,
@@ -518,16 +501,14 @@ async def _handle_compact(memory_agent: MemoryAgent) -> None:
     print()
 
 
-async def run_cli_interactive(enable_wechat: bool = False, enable_telegram: bool = False) -> None:
+async def run_cli_interactive() -> None:
     """CLI 交互模式 — 持久 Agent 系统 (启动一次，持续运行)
 
-    Args:
-        enable_wechat: 是否启用微信通信渠道（同时服务 CLI 和微信用户）
-        enable_telegram: 是否启用 Telegram 通信渠道
+    通信渠道开关通过 /channel 命令控制，启动时从 RuntimeConfig 读取。
     """
     print(f"\033[1mMIA v0.1.0 — 交互模式\033[0m")
     features = []
-    if enable_wechat:
+    if rt.wechat_enabled:
         features.append("微信渠道")
     feature_str = f" ({', '.join(features)})" if features else ""
     print(f"  输入 '/quit' 退出, '/help' 查看帮助, '/compact' 压缩对话历史")
@@ -637,7 +618,7 @@ async def run_cli_interactive(enable_wechat: bool = False, enable_telegram: bool
     # WeChat 通信渠道 (可选) — 收发分离
     wechat_receiver = None
     wechat_sender = None
-    if enable_wechat:
+    if rt.wechat_enabled:
         wechat_receiver = WeChatReceiverAgent(
             bus=bus,
             bot_token=config.wechat.bot_token,
@@ -659,7 +640,7 @@ async def run_cli_interactive(enable_wechat: bool = False, enable_telegram: bool
     # Telegram 通信渠道 (可选) — 收发分离
     telegram_receiver = None
     telegram_sender = None
-    if enable_telegram:
+    if rt.telegram_enabled:
         telegram_receiver = TelegramReceiverAgent(
             bus=bus,
             bot_token=config.telegram.bot_token,
@@ -682,9 +663,9 @@ async def run_cli_interactive(enable_wechat: bool = False, enable_telegram: bool
     print(f"  Receiver: 视觉={'on' if rt.receiver_vision_enabled else 'off'} 语音={'on' if rt.receiver_audio_enabled else 'off'}")
     print(f"  Sender: TTS={'on' if rt.sender_tts_enabled else 'off'}")
     print(f"  记忆: MemoryAgent @ {memory_agent.store.file_path}/ (index+daily)")
-    if enable_wechat:
+    if rt.wechat_enabled:
         print(f"  微信: 已启用 (iLink Bot 长轮询) {'(有 token)' if config.wechat.bot_token else '(需 QR 码登录)'}")
-    if enable_telegram:
+    if rt.telegram_enabled:
         print(f"  Telegram: 已启用 (Bot API @{config.telegram.bot_token[:10]}...{' 有 token' if config.telegram.bot_token else ' 需配置'})")
     print(f"\033[1m{'='*50}\033[0m")
     print()
@@ -694,18 +675,18 @@ async def run_cli_interactive(enable_wechat: bool = False, enable_telegram: bool
     await scheduler.start()
     await sender.start()
     await task_agent.start()
-    if enable_wechat:
+    if rt.wechat_enabled:
         await wechat_receiver.start()
         await wechat_sender.start()
-    if enable_telegram:
+    if rt.telegram_enabled:
         await telegram_receiver.start()
         await telegram_sender.start()
 
     # 后台消息处理循环 (持久运行)
     agent_list = [receiver, memory_agent, scheduler, sender, task_agent]
-    if enable_wechat:
+    if rt.wechat_enabled:
         agent_list.extend([wechat_receiver, wechat_sender])
-    if enable_telegram:
+    if rt.telegram_enabled:
         agent_list.extend([telegram_receiver, telegram_sender])
     tasks: list[asyncio.Task] = []
     for agent in agent_list:
@@ -862,8 +843,6 @@ async def run_cli_interactive(enable_wechat: bool = False, enable_telegram: bool
                 if action == CommandAction.RECONFIGURE_AGENTS:
                     agent_list, tasks = await _reconfigure_agents(
                         agent_list, tasks, bus, config,
-                        enable_wechat=rt.wechat_enabled,
-                        enable_telegram=rt.telegram_enabled,
                         session_manager=session_manager,
                     )
                     memory_agent = _find_agent(agent_list, MemoryAgent)
@@ -875,8 +854,6 @@ async def run_cli_interactive(enable_wechat: bool = False, enable_telegram: bool
                 if action == CommandAction.RECONFIGURE_AGENTS:
                     agent_list, tasks = await _reconfigure_agents(
                         agent_list, tasks, bus, config,
-                        enable_wechat=rt.wechat_enabled,
-                        enable_telegram=rt.telegram_enabled,
                         session_manager=session_manager,
                     )
                     memory_agent = _find_agent(agent_list, MemoryAgent)
@@ -888,8 +865,6 @@ async def run_cli_interactive(enable_wechat: bool = False, enable_telegram: bool
                 if action == CommandAction.RECONFIGURE_WECHAT:
                     agent_list, tasks = await _reconfigure_agents(
                         agent_list, tasks, bus, config,
-                        enable_wechat=rt.wechat_enabled,
-                        enable_telegram=rt.telegram_enabled,
                         session_manager=session_manager,
                     )
                     memory_agent = _find_agent(agent_list, MemoryAgent)
@@ -901,8 +876,6 @@ async def run_cli_interactive(enable_wechat: bool = False, enable_telegram: bool
                 if action == CommandAction.RECONFIGURE_WECHAT:
                     agent_list, tasks = await _reconfigure_agents(
                         agent_list, tasks, bus, config,
-                        enable_wechat=rt.wechat_enabled,
-                        enable_telegram=rt.telegram_enabled,
                         session_manager=session_manager,
                     )
                     memory_agent = _find_agent(agent_list, MemoryAgent)
@@ -1053,14 +1026,9 @@ def main():
     elif args.query:
         asyncio.run(run_cli_query(
             args.query, args.image, args.voice,
-            enable_wechat=args.wechat,
-            enable_telegram=args.telegram,
         ))
     else:
-        asyncio.run(run_cli_interactive(
-            enable_wechat=args.wechat,
-            enable_telegram=args.telegram,
-        ))
+        asyncio.run(run_cli_interactive())
 
 
 if __name__ == "__main__":
