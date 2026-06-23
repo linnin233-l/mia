@@ -664,19 +664,18 @@ class SchedulerAgent(BaseAgent):
     # ─── 辅助方法 ──────────────────────────────────────
 
     def _channel_meta(self, trigger_msg: Message) -> dict:
-        """从 trigger_msg.payload 提取渠道元数据（context_token, to_user_id）
+        """从 trigger_msg.payload 提取渠道元数据（透传给 Sender）
 
-        这些字段由 WeChatReceiverAgent 注入 RAW_INPUT → ReceiverAgent 透传 → 到达此处。
-        使 Scheduler 输出消息携带这些字段 → WeChatSenderAgent 直接用它们发 iLink 消息。
+        这些字段由渠道 ReceiverAgent 注入 RAW_INPUT → ReceiverAgent 透传 → 到达此处。
+        WeChat: context_token + to_user_id
+        Telegram: chat_id
         """
         payload = trigger_msg.payload if trigger_msg else {}
         meta: dict = {}
-        ct = payload.get("context_token", "")
-        tu = payload.get("to_user_id", "")
-        if ct:
-            meta["context_token"] = ct
-        if tu:
-            meta["to_user_id"] = tu
+        for key in ("context_token", "to_user_id", "chat_id"):
+            val = payload.get(key, "")
+            if val:
+                meta[key] = val
         return meta
 
     def _resolve_output_target(self) -> str:

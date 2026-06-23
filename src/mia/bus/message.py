@@ -123,16 +123,23 @@ def make_user_intent(
     session_id: Optional[str] = None,
     context_token: str = "",
     to_user_id: str = "",
+    chat_id: str = "",
+    **channel_meta,
 ) -> Message:
     """构建 USER_INTENT 消息
+
+    渠道元数据 (context_token, to_user_id, chat_id, **channel_meta)
+    会被透传到 payload，由 Scheduler → Sender 链路传递到对应的渠道 Sender Agent。
 
     Args:
         original: 用户原始输入文本
         intent: Receiver 理解后的意图描述
         media_refs: 关联的媒体文件路径列表 (图片/音频)
         session_id: 会话 ID
-        context_token: 微信渠道的 iLink context_token (透传给回复端)
-        to_user_id: 微信渠道的用户 ID (透传给回复端)
+        context_token: 微信渠道的 iLink context_token
+        to_user_id: 微信渠道的用户 ID
+        chat_id: Telegram 渠道的 chat_id
+        **channel_meta: 其他渠道特有字段，全部透传
     """
     payload: dict = {
         "original": original,
@@ -143,6 +150,10 @@ def make_user_intent(
         payload["context_token"] = context_token
     if to_user_id:
         payload["to_user_id"] = to_user_id
+    if chat_id:
+        payload["chat_id"] = chat_id
+    # 其他渠道字段全部透传
+    payload.update(channel_meta)
 
     return Message(
         msg_type=MessageType.USER_INTENT,
@@ -159,21 +170,28 @@ def make_send_text(
     target: str = "sender",
     context_token: str = "",
     to_user_id: str = "",
+    chat_id: str = "",
+    **channel_meta,
 ) -> Message:
     """构建 SEND_TEXT 消息
 
     Args:
         message: 要发送给用户的文本内容
         session_id: 会话 ID
-        target: 目标 Agent 名称（默认 "sender"，多渠道时可指定其他目标）
+        target: 目标 Agent 名称（默认 "sender"）
         context_token: 微信渠道 iLink context_token
         to_user_id: 微信渠道用户 ID
+        chat_id: Telegram 渠道的 chat_id
+        **channel_meta: 其他渠道字段，全部透传
     """
     payload: dict = {"message": message}
     if context_token:
         payload["context_token"] = context_token
     if to_user_id:
         payload["to_user_id"] = to_user_id
+    if chat_id:
+        payload["chat_id"] = chat_id
+    payload.update(channel_meta)
     return Message(
         msg_type=MessageType.SEND_TEXT,
         source="scheduler",
@@ -191,6 +209,8 @@ def make_send_voice(
     target: str = "sender",
     context_token: str = "",
     to_user_id: str = "",
+    chat_id: str = "",
+    **channel_meta,
 ) -> Message:
     """构建 SEND_VOICE 消息"""
     payload: dict = {
@@ -202,6 +222,9 @@ def make_send_voice(
         payload["context_token"] = context_token
     if to_user_id:
         payload["to_user_id"] = to_user_id
+    if chat_id:
+        payload["chat_id"] = chat_id
+    payload.update(channel_meta)
     return Message(
         msg_type=MessageType.SEND_VOICE,
         source="scheduler",
@@ -299,6 +322,8 @@ def make_stream_start(
     target: str = "sender",
     context_token: str = "",
     to_user_id: str = "",
+    chat_id: str = "",
+    **channel_meta,
 ) -> Message:
     """构建 STREAM_START 消息"""
     payload: dict = {}
@@ -306,6 +331,9 @@ def make_stream_start(
         payload["context_token"] = context_token
     if to_user_id:
         payload["to_user_id"] = to_user_id
+    if chat_id:
+        payload["chat_id"] = chat_id
+    payload.update(channel_meta)
     return Message(
         msg_type=MessageType.STREAM_START,
         source="scheduler",

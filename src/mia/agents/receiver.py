@@ -97,9 +97,10 @@ class ReceiverAgent(BaseAgent):
 
         full_intent = "\n".join(intent_parts)
 
-        # 透传微信渠道的 context_token 和 to_user_id（如果有）
+        # 透传渠道元数据（WeChat: context_token+to_user_id, Telegram: chat_id）
         context_token = msg.payload.get("context_token", "")
         to_user_id = msg.payload.get("to_user_id", "")
+        chat_id = msg.payload.get("chat_id", "")
 
         # 结构化展示
         from mia.config import get_config
@@ -121,6 +122,7 @@ class ReceiverAgent(BaseAgent):
             session_id=session_id,
             context_token=context_token,
             to_user_id=to_user_id,
+            chat_id=chat_id,
         )
         await self.send(intent_msg)
         logger.info("[Receiver] USER_INTENT 已发送, intent_len={}", len(full_intent))
