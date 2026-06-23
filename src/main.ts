@@ -642,13 +642,15 @@ async function runServer(port: number): Promise<void> {
     const originalWarn = console.warn.bind(console);
 
     function addLog(text: string): void {
+      // 剥离 ANSI 转义序列 (颜色码等) — 前端不需要终端控制字符
+      const clean = text.replace(/\x1b\[[0-9;]*m/g, '');
       // 存入环形缓冲区
-      logRingBuffer.push(text);
+      logRingBuffer.push(clean);
       if (logRingBuffer.length > LOG_RING_MAX) {
         logRingBuffer.shift();
       }
       // 广播到所有 WebSocket 客户端
-      broadcastLog(text);
+      broadcastLog(clean);
     }
 
     console.log = (...args: unknown[]) => {
