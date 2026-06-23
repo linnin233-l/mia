@@ -1,5 +1,5 @@
 /**
- * TUI 边框测试 — 纯 ANSI，零依赖
+ * TUI 边框测试 — 交替屏幕，原地刷新
  *
  * npm run tui
  */
@@ -9,49 +9,39 @@ import readline from 'node:readline';
 const B = {
   tl: '┌', tr: '┐', bl: '└', br: '┘',
   h: '─', v: '│',
-  hl: '├', hr: '┤', vt: '┬', vb: '┴',
+  hl: '├', hr: '┤',
 };
 
-let cols = process.stdout.columns || 80;
-let rows = process.stdout.rows || 24;
-
 function draw() {
-  cols = process.stdout.columns || 80;
-  rows = process.stdout.rows || 24;
-  const w = cols;
-  const h = rows;
-  const innerW = w - 2;
+  const w = process.stdout.columns || 80;
+  const h = process.stdout.rows || 24;
+  const iw = w - 2;
 
-  // 先清屏再画（不用交替屏幕，纯重绘策略）
   const lines: string[] = [];
-
-  // 顶边框
-  lines.push(B.tl + B.h.repeat(innerW) + B.tr);
+  lines.push(B.tl + B.h.repeat(iw) + B.tr);
 
   // Header
   const title = ' MIA TUI | ' + w + 'x' + h + ' ';
-  const titlePad = innerW - title.length;
-  lines.push(B.v + title + ' '.repeat(titlePad > 0 ? titlePad : 0) + B.v);
+  const tp = Math.max(0, iw - title.length);
+  lines.push(B.v + title + ' '.repeat(tp) + B.v);
 
-  // 分隔线
-  lines.push(B.hl + B.h.repeat(innerW) + B.hr);
+  // Divider
+  lines.push(B.hl + B.h.repeat(iw) + B.hr);
 
-  // 内容区
+  // Content
   for (let y = 3; y < h - 1; y++) {
     if (y === h - 2) {
       const hint = ' Ctrl+C 退出 ';
-      const pad = innerW - hint.length;
-      lines.push(B.v + ' '.repeat(pad > 0 ? pad : 0) + hint + B.v);
+      lines.push(B.v + ' '.repeat(Math.max(0, iw - hint.length)) + hint + B.v);
     } else {
-      lines.push(B.v + ' '.repeat(innerW) + B.v);
+      lines.push(B.v + ' '.repeat(iw) + B.v);
     }
   }
 
-  // 底边框
-  lines.push(B.bl + B.h.repeat(innerW) + B.br);
+  lines.push(B.bl + B.h.repeat(iw) + B.br);
 
-  // 先归位清屏，再一次写出全部行
-  process.stdout.write('\x1b[1;1H\x1b[2J' + lines.join('\n'));
+  // 仅归位，不清屏（交替屏幕本身就是干净的，清屏反而可能吞首行）
+  process.stdout.write('\x1b[H' + lines.join('\n'));
 }
 
 function main() {
@@ -60,7 +50,8 @@ function main() {
     process.stdin.setRawMode(true);
   }
 
-  process.stdout.write('\x1b[?25l'); // 隐藏光标
+  // 交替屏幕 + 隐藏光标
+  process.stdout.write('\x1b[?1049h\x1b[?25l');
   draw();
 
   process.stdout.on('resize', draw);
@@ -74,7 +65,7 @@ function main() {
 }
 
 function cleanup() {
-  process.stdout.write('\x1b[?25h\x1b[2J\x1b[1;1H');
+  process.stdout.write('\x1b[?1049l\x1b[?25h');
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(false);
   }
