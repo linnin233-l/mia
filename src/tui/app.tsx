@@ -17,6 +17,12 @@ import { MemoryPanel } from './components/MemoryPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { tuiReducer, createInitialState } from './store.js';
 import type { MemoryAgent } from '../agents/memory.js';
+import {
+  handleModelCommand,
+  handleAgentCommand,
+  handleChannelCommand,
+} from '../cli/commands.js';
+import { getConfig } from '../config.js';
 import type { MemoryEntry } from './types.js';
 
 // ─── Bridge 接口 ────────────────────────────────────────
@@ -57,10 +63,173 @@ const HELP_TEXT = `MIA TUI 命令:
   Ctrl+C        — 退出`;
 
 /** 本地命令列表（不发送给 Agent） */
-const LOCAL_COMMANDS = new Set([
-  '/help', '/h', '/quit', '/q', '/memory', '/clear',
-  '/thinking', '/tools', '/verbose',
-]);
+const ALL_COMMANDS: Record<
+  string,
+  {
+    handler: (ctx: {
+      dispatch: React.Dispatch<import('./store.js').TuiAction>;
+      memoryAgent: MemoryAgent | null;
+      onQuit: () => void;
+      text: string;
+    }) => void;
+    desc: string;
+  }
+> = {
+  '/help': {
+    desc: '显示帮助',
+    handler: ({ dispatch }) => {
+      dispatch({
+        type: 'ADD_USER_MESSAGE',
+        content: '/help',
+        id: Date.now().toString(16),
+      });
+      dispatch({ type: 'FINISH_STREAMING', content: HELP_TEXT });
+    },
+  },
+  '/h': {
+    desc: '显示帮助',
+    handler: ({ dispatch }) => {
+      dispatch({
+        type: 'ADD_USER_MESSAGE',
+        content: '/h',
+        id: Date.now().toString(16),
+      });
+      dispatch({ type: 'FINISH_STREAMING', content: HELP_TEXT });
+    },
+  },
+  '/quit': { desc: '退出', handler: ({ onQuit }) => onQuit() },
+  '/q': { desc: '退出', handler: ({ onQuit }) => onQuit() },
+  '/exit': { desc: '退出', handler: ({ onQuit }) => onQuit() },
+  '/memory': {
+    desc: '记忆浏览器',
+    handler: ({ dispatch }) => {
+      dispatch({ type: 'SET_FULLSCREEN', mode: 'memory' });
+    },
+  },
+  '/clear': {
+    desc: '清空对话',
+    handler: ({ dispatch }) => dispatch({ type: 'CLEAR_CHAT' }),
+  },
+  '/thinking': {
+    desc: '切换思考面板',
+    handler: ({ dispatch }) =>
+      dispatch({ type: 'TOGGLE_PANEL', panel: 'thinking' }),
+  },
+  '/tools': {
+    desc: '切换工具面板',
+    handler: ({ dispatch }) =>
+      dispatch({ type: 'TOGGLE_PANEL', panel: 'tools' }),
+  },
+  '/verbose': {
+    desc: '切换详细输出',
+    handler: ({ dispatch }) => {
+      const cfg = getConfig();
+      cfg.agent.verbose = !cfg.agent.verbose;
+      dispatch({
+        type: 'FINISH_STREAMING',
+        content: `Verbose 模式已${cfg.agent.verbose ? '开启' : '关闭'}`,
+      });
+    },
+  },
+  '/model': {
+    desc: '模型平台配置',
+    handler: async ({ dispatch }) => {
+      const cfg = getConfig();
+      dispatch({
+        type: 'ADD_USER_MESSAGE',
+        content: '/model',
+        id: Date.now().toString(16),
+      });
+      try {
+        await handleModelCommand(cfg.runtime);
+        dispatch({
+          type: 'FINISH_STREAMING',
+          content: '模型配置已更新（/model 命令完成）',
+        });
+      } catch (err) {
+        dispatch({
+          type: 'FINISH_STREAMING',
+          content: `模型配置失败: ${String(err)}`,
+        });
+      }
+    },
+  },
+  '/agent': {
+    desc: 'Agent 模型分配',
+    handler: async ({ dispatch }) => {
+      const cfg = getConfig();
+      dispatch({
+        type: 'ADD_USER_MESSAGE',
+        content: '/agent',
+        id: Date.now().toString(16),
+      });
+      try {
+        await handleAgentCommand(cfg.runtime);
+        dispatch({
+          type: 'FINISH_STREAMING',
+          content: 'Agent 配置已更新（/agent 命令完成）',
+        });
+      } catch (err) {
+        dispatch({
+          type: 'FINISH_STREAMING',
+          content: `Agent 配置失败: ${String(err)}`,
+        });
+      }
+    },
+  },
+  '/channel': {
+    desc: '通信渠道配置',
+    handler: async ({ dispatch }) => {
+      const cfg = getConfig();
+      dispatch({
+        type: 'ADD_USER_MESSAGE',
+        content: '/channel',
+        id: Date.now().toString(16),
+      });
+      try {
+        await handleChannelCommand(cfg.runtime);
+        dispatch({
+          type: 'FINISH_STREAMING',
+          content: '渠道配置已更新（/channel 命令完成）',
+        });
+      } catch (err) {
+        dispatch({
+          type: 'FINISH_STREAMING',
+          content: `渠道配置失败: ${String(err)}`,
+        });
+      }
+    },
+  },
+  '/compact': {
+    desc: '压缩对话历史',
+    handler: async ({ memoryAgent, dispatch }) => {
+      if (!memoryAgent) {
+        dispatch({
+          type: 'FINISH_STREAMING',
+          content: 'MemoryAgent 未就绪，无法压缩',
+        });
+        return;
+      }
+      dispatch({
+        type: 'ADD_USER_MESSAGE',
+        content: '/compact',
+        id: Date.now().toString(16),
+      });
+      try {
+        const summary = await memoryAgent.compact();
+        dispatch({
+          type: 'FINISH_STREAMING',
+          content: `对话历史已压缩:\n${summary.slice(0, 300)}`,
+        });
+      } catch (err) {
+        dispatch({
+          type: 'FINISH_STREAMING',
+          content: `压缩失败: ${String(err)}`,
+        });
+      }
+    },
+  },
+};
 
 // ─── App 组件 ───────────────────────────────────────────
 
@@ -137,57 +306,40 @@ export const App: React.FC<AppProps> = ({
   // ─── 输入处理 ───────────────────────────────────
   const handleSubmit = useCallback(
     (text: string) => {
-      if (LOCAL_COMMANDS.has(text)) {
-        switch (text) {
-          case '/help':
-          case '/h':
-            // 直接显示帮助文本作为系统消息
-            dispatch({
-              type: 'ADD_USER_MESSAGE',
-              content: text,
-              id: Date.now().toString(16),
-            });
-            dispatch({
-              type: 'FINISH_STREAMING',
-              content: HELP_TEXT,
-            });
-            return;
-
-          case '/quit':
-          case '/q':
-            onQuit();
-            return;
-
-          case '/memory':
-            dispatch({ type: 'SET_FULLSCREEN', mode: 'memory' });
-            return;
-
-          case '/clear':
-            dispatch({ type: 'CLEAR_CHAT' });
-            return;
-
-          case '/thinking':
-            dispatch({ type: 'TOGGLE_PANEL', panel: 'thinking' });
-            return;
-
-          case '/tools':
-            dispatch({ type: 'TOGGLE_PANEL', panel: 'tools' });
-            return;
-
-          case '/verbose':
-            // Toggle verbose mode via config
-            dispatch({
-              type: 'FINISH_STREAMING',
-              content: 'Verbose 模式通过 /verbose 切换（功能开发中）',
-            });
-            return;
+      // 斜杠命令 → 查表处理
+      if (text.startsWith('/')) {
+        const cmd = ALL_COMMANDS[text];
+        if (cmd) {
+          cmd.handler({ dispatch, memoryAgent, onQuit, text });
+          return;
         }
+
+        // 未匹配 → 提示用户，不发给 Agent
+        const known = Object.keys(ALL_COMMANDS).filter((k) => k.length > 2);
+        const suggestions = known
+          .filter((k) => k.startsWith(text.slice(0, 3)))
+          .slice(0, 3);
+        const hint =
+          suggestions.length > 0
+            ? `你是想输入 ${suggestions.join(' 或 ')} 吗？`
+            : '输入 /help 查看可用命令。';
+
+        dispatch({
+          type: 'ADD_USER_MESSAGE',
+          content: text,
+          id: Date.now().toString(16),
+        });
+        dispatch({
+          type: 'FINISH_STREAMING',
+          content: `未知命令 '${text}'。${hint}`,
+        });
+        return;
       }
 
-      // 其他输入 → 转发给 Agent 管道
+      // 普通文本 → 转发给 Agent 管道
       onSubmit(text);
     },
-    [onSubmit, onQuit],
+    [onSubmit, onQuit, memoryAgent],
   );
 
   // ─── Memory 全屏模式 ──────────────────────────
