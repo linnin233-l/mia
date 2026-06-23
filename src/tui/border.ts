@@ -28,8 +28,9 @@ function draw() {
   // 光标归位 → 清屏（含滚动缓冲区）
   let out = '\x1b[H\x1b[2J\x1b[3J';
 
-  // ─── 顶边框 ─────────────────────────────────
-  out += B.tl + B.h.repeat(innerW) + B.tr + '\n';
+  // 顶边框（写两次兜底，防止终端吞首行）
+  const topLine = B.tl + B.h.repeat(innerW) + B.tr + '\n';
+  out += topLine + topLine;
 
   // ─── Header 区 ──────────────────────────────
   const title = ' MIA TUI | ' + w + 'x' + h + ' ';
