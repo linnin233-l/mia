@@ -985,7 +985,7 @@ function handleWsConnection(ws: WebSocket): void {
  * 服务器模式下仅广播状态到 Web GUI。
  */
 async function startWechatChannel(): Promise<void> {
-  console.log('[WeChat] 微信渠道在服务器模式下功能有限，建议使用 CLI 模式: npm run dev -- --wechat');
+  console.log('[WeChat] 微信渠道启动中...');
   broadcastWechat({ type: 'wechat_status', status: 'qr_pending', user_name: '' });
 
   try {
@@ -993,20 +993,29 @@ async function startWechatChannel(): Promise<void> {
     const client = new ILinkClient();
 
     const qrResp = await client.getBotQrcode();
-    if (qrResp.qrcode_img_content) {
-      // 终端打印 QR 码
-      console.log('[WeChat] 请扫描上方二维码登录');
-      // 尝试发送 QR 到 Web GUI（base64 图片数据）
-      broadcastWechat({
-        type: 'wechat_qr',
-        qr_url: '',
-        qr_data: typeof qrResp.qrcode_img_content === 'string'
-          ? qrResp.qrcode_img_content : qrResp.qrcode || '',
-      });
+    const qrcodeStr = qrResp.qrcode || '';
+    if (!qrcodeStr) {
+      console.error('[WeChat] 未获取到 QR 码字符串');
+      broadcastWechat({ type: 'wechat_status', status: 'offline', user_name: '' });
+      return;
     }
 
+    // 生成 QR 码 base64 图片 (用 qrcode 库)
+    const QRCode = (await import('qrcode')).default;
+    const qrDataUrl = await QRCode.toDataURL(qrcodeStr, {
+      width: 256,
+      margin: 2,
+      color: { dark: '#000', light: '#fff' },
+    });
+    console.log('[WeChat] QR 码已生成，请在微信中扫描');
+    broadcastWechat({
+      type: 'wechat_qr',
+      qr_url: '',
+      qr_data: qrDataUrl,
+    });
+
     // 等待登录 (最多 5 分钟)
-    const [botToken, baseUrl] = await client.waitForLogin(qrResp.qrcode || '');
+    const [botToken, baseUrl] = await client.waitForLogin(qrcodeStr);
     console.log(`[WeChat] 已登录`);
 
     // 用 bot token 重新创建客户端

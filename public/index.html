@@ -1541,8 +1541,12 @@
 
     function showWechatQr(qrUrl, qrData) {
       wechatQrArea.style.display = '';
-      if (qrUrl) { wechatQrImg.src = qrUrl; }
-      else if (qrData) { wechatQrImg.src = qrData.startsWith('http') ? qrData : 'data:image/png;base64,' + qrData; }
+      if (qrUrl) {
+        wechatQrImg.src = qrUrl;
+      } else if (qrData) {
+        // 可能是完整 data: URL 或纯 base64
+        wechatQrImg.src = qrData.startsWith('data:') ? qrData : ('data:image/png;base64,' + qrData);
+      }
     }
 
     function addWechatMsg(fromUser, text, ts) {
