@@ -210,12 +210,15 @@ export class MemoryStore {
     const memoryDir = path.dirname(this.filePath);
     const indexPath = path.join(memoryDir, 'index.json');
     if (!fs.existsSync(indexPath)) {
-      // 检查备用路径: data/memory/ (Python 版默认)
-      const altDir = path.resolve('data', 'memory');
-      const altIndex = path.join(altDir, 'index.json');
-      if (fs.existsSync(altIndex)) {
-        this._loadPythonFormat(altDir);
-        return;
+      // 仅在默认 workspace 路径时检查备用 data/memory/ 目录
+      // 不检查自定义 _filePath (测试/临时目录)
+      if (!this._filePath) {
+        const altDir = path.resolve('data', 'memory');
+        const altIndex = path.join(altDir, 'index.json');
+        if (fs.existsSync(altIndex)) {
+          this._loadPythonFormat(altDir);
+          return;
+        }
       }
       console.log(`\x1b[34m[MemoryStore]\x1b[0m 无记忆数据`);
       return;
@@ -241,7 +244,10 @@ export class MemoryStore {
         if (!fs.existsSync(dayFile)) continue;
         try {
           const dayRaw = fs.readFileSync(dayFile, 'utf-8');
-          const dayEntries: KnowledgeEntryData[] = JSON.parse(dayRaw);
+          const dayData = JSON.parse(dayRaw);
+          // Python 格式: { date, updated, entries: [...] }
+          const dayEntries: KnowledgeEntryData[] =
+            Array.isArray(dayData) ? dayData : (dayData.entries || []);
           for (const de of dayEntries) {
             allEntries.push(KnowledgeEntry.fromJSON(de));
           }
