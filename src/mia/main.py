@@ -507,12 +507,8 @@ async def run_cli_interactive() -> None:
     通信渠道开关通过 /channel 命令控制，启动时从 RuntimeConfig 读取。
     """
     print(f"\033[1mMIA v0.1.0 — 交互模式\033[0m")
-    features = []
-    if rt.wechat_enabled:
-        features.append("微信渠道")
-    feature_str = f" ({', '.join(features)})" if features else ""
     print(f"  输入 '/quit' 退出, '/help' 查看帮助, '/compact' 压缩对话历史")
-    print(f"  直接输入问题开始对话{feature_str}")
+    print(f"  直接输入问题开始对话")
     print()
 
     # ══════════════════════════════════════════════════════
