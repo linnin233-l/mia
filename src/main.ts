@@ -1003,13 +1003,19 @@ async function startWechatChannel(): Promise<void> {
       return;
     }
 
-    // qrcode_img_content 已是 base64 编码的 PNG 图片，直接使用
-    const qrImg = qrResp.qrcode_img_content || '';
-    console.log('[WeChat] QR 码已获取，请在微信中扫描');
+    // qrcode_img_content 是微信 liteapp URL，用 qrcode 库生成二维码图片
+    const qrUrl = qrResp.qrcode_img_content || qrcodeStr;
+    const QRCode = (await import('qrcode')).default;
+    const qrDataUrl = await QRCode.toDataURL(qrUrl, {
+      width: 256,
+      margin: 2,
+      color: { dark: '#000', light: '#fff' },
+    });
+    console.log('[WeChat] QR 码已生成，请在微信中扫描');
     broadcastWechat({
       type: 'wechat_qr',
       qr_url: '',
-      qr_data: qrImg.startsWith('data:') ? qrImg : ('data:image/png;base64,' + qrImg),
+      qr_data: qrDataUrl,
     });
 
     // 等待登录 (最多 5 分钟)
