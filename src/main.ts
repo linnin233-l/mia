@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import http from 'node:http';
+import chalk from 'chalk';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { MessageBus } from './bus/bus.js';
@@ -43,6 +44,8 @@ import {
 } from './cli/commands.js';
 import type { PipelineEventCallbacks } from './server/ws-relay.js';
 import { WsRelay } from './server/ws-relay.js';
+import { SessionStore, type SessionMessage } from './session/store.js';
+import { handleSessionCommand } from './cli/sessions.js';
 
 // ─── 类型定义 ────────────────────────────────────────────
 
@@ -358,6 +361,15 @@ async function runAgentPipeline(
       if (msg.msg_type === MessageType.CONVERSATION_DONE) {
         finalResponse = (msg.payload['message'] as string) || '';
         events?.onDone?.();
+
+        // WebSocket 模式自动保存会话
+        if (events) {
+          try {
+            const sstore = new SessionStore();
+            sstore.appendUserMsg(sessionId, query);
+            sstore.appendAssistantMsg(sessionId, finalResponse);
+          } catch { /* ignore */ }
+        }
         break;
       }
 
@@ -388,6 +400,40 @@ async function runAgentPipeline(
   }
 
   return finalResponse;
+}
+
+// ─── 会话持久化辅助 ──────────────────────────────────────
+
+/**
+ * 将会话历史消息注入到 MemoryAgent 的对话历史中
+ * 用于 /sessions switch 后恢复上下文
+ */
+function injectHistoryToMemory(
+  messages: SessionMessage[],
+  memoryAgent: MemoryAgent,
+): void {
+  const history = (memoryAgent as any)._conversationHistory as Array<{
+    user: string;
+    assistant: string;
+    session_id?: string;
+    timestamp?: string;
+  }>;
+  if (!Array.isArray(history)) return;
+
+  let pendingUser: string | null = null;
+  for (const msg of messages) {
+    if (msg.role === 'user') {
+      pendingUser = msg.content;
+    } else if (msg.role === 'assistant' && pendingUser !== null) {
+      history.push({
+        user: pendingUser,
+        assistant: msg.content,
+        session_id: 'loaded',
+        timestamp: new Date(msg.ts).toISOString(),
+      });
+      pendingUser = null;
+    }
+  }
 }
 
 // ─── 单次 CLI 对话 ──────────────────────────────────────
@@ -452,6 +498,12 @@ async function runCliInteractive(enableWechat = false): Promise<void> {
     new Promise((resolve) => rl.question(prompt, resolve));
 
   try {
+    // 会话管理 — 持久化 sessionId + 自动保存
+    const sessionStore = new SessionStore();
+    let sessionId = sessionStore.create(); // 每个 CLI 生命周期一个会话
+    let sessionThoughts: SessionMessage['thoughts'] = [];
+    let sessionTools: SessionMessage['tools'] = [];
+
     // 用户输入循环
     while (true) {
       let userInput: string;
@@ -482,6 +534,10 @@ async function runCliInteractive(enableWechat = false): Promise<void> {
   /compact          — 压缩对话历史
   /verbose          — 切换详细日志
   /memory           — 显示当前记忆状态
+  /sessions         — 列出所有会话
+  /sessions new     — 创建新会话
+  /sessions sw <id> — 切换到指定会话
+  /sessions rm <id> — 删除指定会话
   直接输入文本       — 开始对话
 `);
         continue;
@@ -543,6 +599,20 @@ async function runCliInteractive(enableWechat = false): Promise<void> {
         continue;
       }
 
+      // /sessions
+      if (userInput.toLowerCase().startsWith('/sessions') || userInput.toLowerCase().startsWith('/session')) {
+        const args = userInput.split(/\s+/).slice(1);
+        const result = await handleSessionCommand(args, sessionId);
+        if (result.switched && result.newSessionId) {
+          sessionId = result.newSessionId;
+          if (result.historyMessages && result.historyMessages.length > 0) {
+            console.log(chalk.dim(`  已加载 ${result.historyMessages.length} 条历史消息`));
+            injectHistoryToMemory(result.historyMessages, agents.memoryAgent);
+          }
+        }
+        continue;
+      }
+
       // 拦截未知 / 命令
       if (userInput.startsWith('/')) {
         console.log(`  \x1b[33m未知命令 '${userInput}'，输入 /help 查看可用命令。\x1b[0m`);
@@ -551,7 +621,9 @@ async function runCliInteractive(enableWechat = false): Promise<void> {
       }
 
       // ─── 本轮对话 ────────────────────────────
-      const sessionId = crypto.randomBytes(6).toString('hex');
+      // 使用持久化的 sessionId (复用 /sessions new 创建的)
+      sessionThoughts = [];
+      sessionTools = [];
 
       // 注入 RAW_INPUT
       const rawMsg = makeRawInput(userInput, [], sessionId);
@@ -567,6 +639,25 @@ async function runCliInteractive(enableWechat = false): Promise<void> {
       while (Date.now() < deadline) {
         const msg = await bus.receive('main', 1000);
         if (!msg) continue;
+
+        // 跟踪 thoughts/tools 用于会话保存
+        if (msg.msg_type === MessageType.TUI_THOUGHT) {
+          sessionThoughts.push({
+            agent: (msg.payload['agent'] as string) || '',
+            title: (msg.payload['title'] as string) || '',
+            detail: (msg.payload['detail'] as string) || '',
+            ts: Date.now(),
+          });
+        }
+        if (msg.msg_type === MessageType.EXECUTE_TASK || msg.msg_type === MessageType.TASK_RESULT || msg.msg_type === MessageType.TASK_ERROR) {
+          sessionTools.push({
+            name: 'task',
+            status: msg.msg_type === MessageType.EXECUTE_TASK ? 'running' : msg.msg_type === MessageType.TASK_RESULT ? 'success' : 'error',
+            args: (msg.payload['task'] as string) || '',
+            result: (msg.payload['result'] || msg.payload['error'] || '') as string,
+            ts: Date.now(),
+          });
+        }
 
         if (msg.msg_type === MessageType.CONVERSATION_DONE) {
           finalResponse = (msg.payload['message'] as string) || '';
@@ -588,6 +679,19 @@ async function runCliInteractive(enableWechat = false): Promise<void> {
         console.log();
         console.log(`\x1b[1m${'='.repeat(50)}\x1b[0m`);
         console.log(`\x1b[1m[完成] 对话结束\x1b[0m`);
+
+        // 自动保存会话
+        try {
+          sessionStore.appendUserMsg(sessionId, userInput);
+          sessionStore.appendAssistantMsg(
+            sessionId,
+            finalResponse,
+            sessionThoughts.length > 0 ? sessionThoughts : undefined,
+            sessionTools.length > 0 ? sessionTools : undefined,
+          );
+        } catch {
+          // 静默失败，不影响对话体验
+        }
       }
     }
   } finally {
@@ -826,6 +930,31 @@ function handleWsConnection(ws: WebSocket): void {
       broadcastWechat({ type: 'wechat_status', status: 'qr_pending', user_name: '' });
     } else {
       broadcastWechat({ type: 'wechat_status', status: 'offline', user_name: '' });
+    }
+  }, async (action, id) => {
+    // 会话控制
+    const sstore = new SessionStore();
+    switch (action) {
+      case 'new': {
+        const newId = sstore.create();
+        return { sessions: sstore.list() as unknown as Record<string, unknown>[], id: newId };
+      }
+      case 'list':
+        return { sessions: sstore.list() as unknown as Record<string, unknown>[] };
+      case 'load': {
+        if (!id) return { sessions: sstore.list() as unknown as Record<string, unknown>[] };
+        const session = sstore.load(id);
+        return {
+          sessions: sstore.list() as unknown as Record<string, unknown>[],
+          messages: (session?.messages || []) as unknown as Record<string, unknown>[],
+        };
+      }
+      case 'delete': {
+        if (id) sstore.delete(id);
+        return { sessions: sstore.list() as unknown as Record<string, unknown>[] };
+      }
+      default:
+        return { sessions: sstore.list() as unknown as Record<string, unknown>[] };
     }
   });
 

@@ -52,7 +52,11 @@ export type WsClientEvent =
   | { type: 'stop' }
   | { type: 'memory_query' }
   | { type: 'wechat_start' }
-  | { type: 'wechat_stop' };
+  | { type: 'wechat_stop' }
+  | { type: 'sessions_list' }
+  | { type: 'sessions_load'; id: string }
+  | { type: 'sessions_delete'; id: string }
+  | { type: 'sessions_new' };
 
 /** WebSocket readyState 常量 (ws 库) */
 const WS_OPEN = 1;
@@ -109,18 +113,31 @@ export class WsRelay {
   /** 微信控制函数（由外部注入） */
   private wechatControl: (action: 'start' | 'stop') => Promise<void>;
 
+  /** 会话控制函数（由外部注入） */
+  private sessionControl: (action: string, id?: string) => Promise<{
+    sessions?: Array<Record<string, unknown>>;
+    messages?: Array<Record<string, unknown>>;
+    id?: string;
+  }>;
+
   constructor(
     ws: WebSocket,
     sessionId: string,
     runPipeline: PipelineRunner,
     queryMemory: () => Promise<Array<Record<string, unknown>>>,
     wechatControl: (action: 'start' | 'stop') => Promise<void>,
+    sessionControl: (action: string, id?: string) => Promise<{
+      sessions?: Array<Record<string, unknown>>;
+      messages?: Array<Record<string, unknown>>;
+      id?: string;
+    }>,
   ) {
     this.ws = ws;
     this.sessionId = sessionId;
     this.runPipeline = runPipeline;
     this.queryMemory = queryMemory;
     this.wechatControl = wechatControl;
+    this.sessionControl = sessionControl;
   }
 
   /**
@@ -163,6 +180,14 @@ export class WsRelay {
       this._handleWechatStart();
     } else if (parsed.type === 'wechat_stop') {
       this._handleWechatStop();
+    } else if (parsed.type === 'sessions_list') {
+      this._handleSessionsList();
+    } else if (parsed.type === 'sessions_load') {
+      this._handleSessionsLoad(parsed as { type: 'sessions_load'; id: string });
+    } else if (parsed.type === 'sessions_delete') {
+      this._handleSessionsDelete(parsed as { type: 'sessions_delete'; id: string });
+    } else if (parsed.type === 'sessions_new') {
+      this._handleSessionsNew();
     } else {
       this._send({ type: 'error', message: `Unknown message type: ${(parsed as { type: string }).type}` });
     }
@@ -251,6 +276,31 @@ export class WsRelay {
     } catch (err) {
       this._send({ type: 'error', message: `微信停止失败: ${err}` });
     }
+  }
+
+  /** 处理 sessions_new */
+  private async _handleSessionsNew(): Promise<void> {
+    const result = await this.sessionControl('new');
+    this._send({ type: 'sessions_data' as any, sessions: result.sessions, new_id: result.id });
+  }
+
+  /** 处理 sessions_list */
+  private async _handleSessionsList(): Promise<void> {
+    const result = await this.sessionControl('list');
+    this._send({ type: 'sessions_data' as any, sessions: result.sessions });
+  }
+
+  /** 处理 sessions_load */
+  private async _handleSessionsLoad(event: { id: string }): Promise<void> {
+    const result = await this.sessionControl('load', event.id);
+    this._send({ type: 'sessions_data' as any, sessions: result.sessions, loaded_id: event.id, messages: result.messages });
+  }
+
+  /** 处理 sessions_delete */
+  private async _handleSessionsDelete(event: { id: string }): Promise<void> {
+    await this.sessionControl('delete', event.id);
+    const result = await this.sessionControl('list');
+    this._send({ type: 'sessions_data' as any, sessions: result.sessions });
   }
 
   /** 处理 stop 消息 — 中止当前管线 */

@@ -235,11 +235,13 @@
       transition: flex 0.2s ease;
     }
     .side-section.thoughts { flex: 1; border-bottom: 1px solid var(--border); }
-    .side-section.thoughts.collapsed { flex: 0 0 auto; }    /* 收起后只占 header 高度 */
+    .side-section.thoughts.collapsed { flex: 0 0 auto; }
     .side-section.tools { flex: 0 1 50%; }
-    .side-section.tools.collapsed { flex: 0 0 auto; }       /* 收起后只占 header 高度 */
+    .side-section.tools.collapsed { flex: 0 0 auto; }
     .side-section.logs-section { flex: 0 1 30%; border-top: 1px solid var(--border); }
     .side-section.logs-section.collapsed { flex: 0 0 auto; }
+    .side-section.sessions-section { flex: 0 0 200px; border-bottom: 1px solid var(--border); }
+    .side-section.sessions-section.collapsed { flex: 0 0 auto; }
     
     /* 当 Thinking 收起时，Tools 自动撑满剩余空间 */
     .side-section.thoughts.collapsed ~ .side-section.tools:not(.collapsed) { flex: 1; }
@@ -442,6 +444,60 @@
     .tool-card.no-body { cursor: default; }
     .tool-card.no-body .tool-expand { display: none; }
     .tool-card.no-body:hover { border-color: inherit; }
+
+    /* ─── Sessions ─────────────────────────── */
+    .session-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.1s;
+      font-size: 11px;
+      border: 1px solid transparent;
+    }
+    .session-item:hover { background: rgba(255,255,255,0.04); }
+    .session-item.active { background: rgba(76,201,240,0.08); border-color: rgba(76,201,240,0.2); }
+    .session-item .sess-info { flex: 1; min-width: 0; }
+    .session-item .sess-title {
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-weight: 500;
+    }
+    .session-item .sess-meta {
+      color: var(--text-dim);
+      font-size: 10px;
+      margin-top: 1px;
+    }
+    .session-item .sess-delete {
+      color: var(--text-dim);
+      opacity: 0;
+      cursor: pointer;
+      font-size: 14px;
+      padding: 0 4px;
+      transition: opacity 0.1s;
+      flex-shrink: 0;
+    }
+    .session-item:hover .sess-delete { opacity: 0.6; }
+    .session-item .sess-delete:hover { opacity: 1; color: var(--accent-red); }
+    .session-new-btn {
+      display: block;
+      width: 100%;
+      background: var(--bg-input);
+      color: var(--accent);
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+      padding: 5px;
+      font-size: 11px;
+      cursor: pointer;
+      text-align: center;
+      margin-bottom: 6px;
+      transition: all 0.15s;
+    }
+    .session-new-btn:hover { border-color: var(--accent); background: rgba(76,201,240,0.05); }
 
     /* Empty state */
     .empty-hint {
@@ -739,6 +795,16 @@
 
       <!-- Side Panel (Right) -->
       <div id="side-panel">
+        <!-- Sessions Section -->
+        <div class="side-section sessions-section">
+          <div class="section-header" onclick="toggleSection(this)">
+            📂 Sessions
+            <span class="toggle">▼</span>
+          </div>
+          <div class="section-body" id="sessions-body">
+            <div class="empty-hint">No sessions yet</div>
+          </div>
+        </div>
         <!-- Thoughts Section -->
         <div class="side-section thoughts">
           <div class="section-header" onclick="toggleSection(this)">
@@ -867,6 +933,7 @@
     const wechatMsgsBody = $('#wechat-msgs-body');
     const btnWechatStart = $('#btn-wechat-start');
     const btnWechatStop = $('#btn-wechat-stop');
+    const sessionsBody = $('#sessions-body');
 
     // ─── WebSocket Connection ───────────────────────────
     function connect() {
@@ -884,6 +951,7 @@
       ws.onopen = () => {
         setStatus(true, 'Connected');
         addSysMsg('Connected to MIA server');
+        loadSessionsList();
       };
 
       ws.onmessage = (event) => {
@@ -954,6 +1022,10 @@
 
         case 'wechat_msg':
           addWechatMsg(msg.from_user || '', msg.text || '', msg.ts || 0);
+          break;
+
+        case 'sessions_data':
+          renderSessions(msg.sessions || [], msg.loaded_id || '', msg.messages || null, msg.new_id || '');
           break;
 
         case 'done':
@@ -1481,6 +1553,76 @@
       el.innerHTML = `<span class="wc-ts">${formatTime(ts)}</span><span class="wc-from">${escapeHtml(fromUser)}</span><span class="wc-text">${escapeHtml(text)}</span>`;
       wechatMsgsBody.appendChild(el);
       if (wechatMsgsBody.children.length > 50) wechatMsgsBody.firstChild.remove();
+    }
+
+    // ─── Sessions ──────────────────────────────────────
+    function renderSessions(sessions, loadedId, messages, newId) {
+      const hint = sessionsBody.querySelector('.empty-hint');
+      if (hint) hint.remove();
+
+      // 新会话按钮
+      let html = `<button class="session-new-btn" onclick="newSession()">+ 新会话</button>`;
+      
+      if (!sessions || sessions.length === 0) {
+        html += '<div class="empty-hint">暂无会话</div>';
+      } else {
+        for (const s of sessions) {
+          const isActive = s.id === loadedId || s.id === newId;
+          const time = s.updated_at ? new Date(s.updated_at).toLocaleDateString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
+          html += `
+            <div class="session-item${isActive ? ' active' : ''}" onclick="loadSession('${s.id}')">
+              <div class="sess-info">
+                <div class="sess-title">${escapeHtml(s.title || '会话')}</div>
+                <div class="sess-meta">${s.message_count || 0} 条消息 · ${time}</div>
+              </div>
+              <span class="sess-delete" onclick="event.stopPropagation();deleteSession('${s.id}')" title="删除">✕</span>
+            </div>`;
+        }
+      }
+      sessionsBody.innerHTML = html;
+
+      // 如果加载了会话消息，显示到聊天区
+      if (messages && messages.length > 0 && loadedId) {
+        chatMessages.innerHTML = '<div class="sys-msg">已加载会话历史</div>';
+        for (const m of messages) {
+          if (m.role === 'user') {
+            addUserBubble(m.content);
+          } else if (m.role === 'assistant') {
+            const row = document.createElement('div');
+            row.className = 'msg-row mia';
+            row.innerHTML = `<div class="msg-label">MIA</div><div class="msg-bubble">${formatText(m.content)}</div>`;
+            chatMessages.appendChild(row);
+          }
+        }
+        scrollToBottom();
+      }
+    }
+
+    function loadSession(id) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'sessions_load', id }));
+      }
+    }
+
+    function deleteSession(id) {
+      if (!confirm('确定删除此会话？')) return;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'sessions_delete', id }));
+      }
+    }
+
+    function newSession() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'sessions_new' }));
+        chatMessages.innerHTML = '<div class="sys-msg">新会话已创建 — 开始对话吧 ✨</div>';
+      }
+    }
+
+    /** 连接成功后自动加载会话列表 */
+    function loadSessionsList() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'sessions_list' }));
+      }
     }
 
     // ─── Startup ─────────────────────────────────────────
