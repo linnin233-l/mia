@@ -475,7 +475,7 @@ export class MemoryAgent extends BaseAgent {
     const summary =
       assistantReply.length > 3
         ? assistantReply.slice(0, 150) + (assistantReply.length > 150 ? '...' : '')
-        : combined.slice(0, 150);
+        : userMsg.trim().slice(0, 150);
 
     return new KnowledgeEntry({
       content: summary,

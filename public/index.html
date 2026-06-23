@@ -261,26 +261,60 @@
       padding: 8px 10px;
       font-size: 12px;
       animation: fadeIn 0.2s ease;
+      cursor: pointer;
+      user-select: none;
+      transition: border-color 0.15s;
+    }
+    .thought-card:hover {
+      border-color: rgba(177, 151, 252, 0.4);
+    }
+    .thought-card .thought-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
     .thought-card .thought-agent {
       color: var(--accent-purple);
       font-weight: 600;
       font-size: 11px;
-      margin-bottom: 4px;
+      white-space: nowrap;
     }
     .thought-card .thought-title {
       color: var(--text);
       font-weight: 500;
-      margin-bottom: 2px;
+      font-size: 11.5px;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .thought-card .thought-expand {
+      font-size: 9px;
+      color: var(--text-dim);
+      flex-shrink: 0;
+      transition: transform 0.2s;
+      line-height: 1;
+    }
+    .thought-card.expanded .thought-expand {
+      transform: rotate(90deg);
     }
     .thought-card .thought-detail {
       color: var(--text-dim);
       font-size: 11.5px;
       line-height: 1.4;
       word-break: break-word;
-      max-height: 100px;
-      overflow-y: auto;
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px solid rgba(255,255,255,0.05);
+      display: none;
     }
+    .thought-card.expanded .thought-detail {
+      display: block;
+    }
+    /* 无 detail 时不显示展开按钮 */
+    .thought-card.no-detail { cursor: default; }
+    .thought-card.no-detail .thought-expand { display: none; }
+    .thought-card.no-detail:hover { border-color: rgba(177, 151, 252, 0.2); }
 
     /* Tool card */
     .tool-card {
@@ -290,23 +324,31 @@
       padding: 8px 10px;
       font-size: 12px;
       animation: fadeIn 0.2s ease;
+      cursor: pointer;
+      user-select: none;
+      transition: border-color 0.15s;
+    }
+    .tool-card:hover {
+      border-color: rgba(240, 140, 0, 0.3);
     }
     .tool-card.tool-running {
       border-color: rgba(76, 201, 240, 0.3);
       background: rgba(76, 201, 240, 0.05);
     }
+    .tool-card.tool-running:hover { border-color: rgba(76, 201, 240, 0.5); }
     .tool-card.tool-success {
       border-color: rgba(81, 207, 102, 0.3);
       background: rgba(81, 207, 102, 0.05);
     }
+    .tool-card.tool-success:hover { border-color: rgba(81, 207, 102, 0.5); }
     .tool-card.tool-error {
       border-color: rgba(255, 107, 107, 0.3);
       background: rgba(255, 107, 107, 0.05);
     }
+    .tool-card.tool-error:hover { border-color: rgba(255, 107, 107, 0.5); }
     .tool-card .tool-name {
       font-weight: 600;
       font-size: 11px;
-      margin-bottom: 4px;
       display: flex;
       align-items: center;
       gap: 6px;
@@ -317,50 +359,44 @@
       padding: 1px 6px;
       border-radius: 10px;
       text-transform: uppercase;
+      flex-shrink: 0;
     }
     .tool-card.tool-running .tool-status { background: var(--accent); color: #000; }
     .tool-card.tool-success .tool-status { background: var(--accent-green); color: #000; }
     .tool-card.tool-error .tool-status { background: var(--accent-red); color: #fff; }
-
-    /* Tool card expand/collapse button */
     .tool-card .tool-expand {
-      font-size: 10px;
+      font-size: 9px;
       color: var(--text-dim);
-      cursor: pointer;
-      padding: 2px 6px;
-      margin-left: 4px;
-      border-radius: 4px;
-      user-select: none;
-      transition: all 0.15s;
+      flex-shrink: 0;
+      transition: transform 0.2s;
       line-height: 1;
     }
-    .tool-card .tool-expand:hover {
-      color: var(--text);
-      background: rgba(255,255,255,0.08);
+    .tool-card.expanded .tool-expand {
+      transform: rotate(90deg);
     }
 
+    /* Tool body (args + result) — 默认隐藏，展开后显示 */
+    .tool-card .tool-body {
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px solid rgba(255,255,255,0.05);
+      display: none;
+    }
+    .tool-card.expanded .tool-body {
+      display: block;
+    }
     .tool-card .tool-args,
     .tool-card .tool-result {
       color: var(--text-dim);
       font-size: 11px;
       line-height: 1.4;
       word-break: break-word;
-      /* 默认折叠: 最多2行 + 省略号，不显示滚动条 */
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-    }
-    .tool-card.expanded .tool-args,
-    .tool-card.expanded .tool-result {
-      /* 展开: 显示完整内容，不限制行数 */
-      display: block;
-      -webkit-line-clamp: unset;
-      overflow: visible;
     }
     .tool-card .tool-result { margin-top: 4px; }
-    /* 短文本不需要展开按钮时隐藏 */
-    .tool-card .tool-expand.hidden { display: none; }
+    /* 无 body 时不显示展开按钮 */
+    .tool-card.no-body { cursor: default; }
+    .tool-card.no-body .tool-expand { display: none; }
+    .tool-card.no-body:hover { border-color: inherit; }
 
     /* Empty state */
     .empty-hint {
@@ -675,13 +711,23 @@
       const hint = thoughtsBody.querySelector('.empty-hint');
       if (hint) hint.remove();
 
+      const hasDetail = detail && detail.trim().length > 0;
       const card = document.createElement('div');
-      card.className = 'thought-card';
+      card.className = 'thought-card' + (hasDetail ? '' : ' no-detail');
+      card.title = hasDetail ? 'Click to expand' : '';
       card.innerHTML = `
-        <div class="thought-agent">${escapeHtml(agent)}</div>
-        <div class="thought-title">${escapeHtml(title)}</div>
-        ${detail ? `<div class="thought-detail">${escapeHtml(detail)}</div>` : ''}
+        <div class="thought-header">
+          <span class="thought-agent">${escapeHtml(agent)}</span>
+          <span class="thought-title">${escapeHtml(title)}</span>
+          <span class="thought-expand">▶</span>
+        </div>
+        ${hasDetail ? `<div class="thought-detail">${escapeHtml(detail)}</div>` : ''}
       `;
+      if (hasDetail) {
+        card.addEventListener('click', () => {
+          card.classList.toggle('expanded');
+        });
+      }
       thoughtsBody.appendChild(card);
       thoughtsBody.scrollTop = thoughtsBody.scrollHeight;
 
@@ -709,18 +755,28 @@
             if (statusEl) statusEl.textContent = status;
             // Append result if new
             if (result) {
-              const existingResult = card.querySelector('.tool-result');
-              if (!existingResult) {
-                const r = document.createElement('div');
-                r.className = 'tool-result';
-                r.textContent = result;
-                card.appendChild(r);
+              const body = card.querySelector('.tool-body');
+              if (!body) {
+                const b = document.createElement('div');
+                b.className = 'tool-body';
+                b.innerHTML = `<div class="tool-result">${escapeHtml(result)}</div>`;
+                card.appendChild(b);
+                card.classList.add('expanded'); // auto-expand when result arrives
+                card.classList.remove('no-body');
+                const btn = card.querySelector('.tool-expand');
+                if (btn) btn.classList.remove('hidden');
               } else {
-                existingResult.textContent = result;
+                const existingResult = body.querySelector('.tool-result');
+                if (!existingResult) {
+                  const r = document.createElement('div');
+                  r.className = 'tool-result';
+                  r.textContent = result;
+                  body.appendChild(r);
+                } else {
+                  existingResult.textContent = result;
+                }
               }
             }
-            // Refresh expand button state
-            refreshExpandBtn(card);
             return;
           }
         }
@@ -728,16 +784,22 @@
 
       const hasBody = args || result;
       const card = document.createElement('div');
-      card.className = `tool-card tool-${status}`;
+      card.className = `tool-card tool-${status}${hasBody ? '' : ' no-body'}`;
+      card.title = hasBody ? 'Click to expand' : '';
       card.innerHTML = `
         <div class="tool-name">
           <span class="tool-name-text">${escapeHtml(name)}</span>
           <span class="tool-status">${status}</span>
-          <span class="tool-expand${hasBody ? '' : ' hidden'}" onclick="toggleToolCard(this)" title="展开/收起">▶</span>
+          <span class="tool-expand${hasBody ? '' : ' hidden'}">▶</span>
         </div>
-        ${args ? `<div class="tool-args">${escapeHtml(args)}</div>` : ''}
-        ${result ? `<div class="tool-result">${escapeHtml(result)}</div>` : ''}
+        ${args ? `<div class="tool-body"><div class="tool-args">${escapeHtml(args)}</div></div>` : ''}
+        ${result ? `<div class="tool-body"><div class="tool-result">${escapeHtml(result)}</div></div>` : ''}
       `;
+      if (hasBody) {
+        card.addEventListener('click', () => {
+          card.classList.toggle('expanded');
+        });
+      }
       toolsBody.appendChild(card);
       toolsBody.scrollTop = toolsBody.scrollHeight;
 
@@ -747,21 +809,18 @@
       }
     }
 
-    /** 展开/收起单个 tool card */
+    /** 展开/收起单个 tool card — 保留兼容（已被 click on card 替代） */
     function toggleToolCard(btn) {
       const card = btn.closest('.tool-card');
       if (!card) return;
       card.classList.toggle('expanded');
-      btn.textContent = card.classList.contains('expanded') ? '▼' : '▶';
     }
 
     /** 根据内容长度自动显示/隐藏展开按钮 */
     function refreshExpandBtn(card) {
       const btn = card.querySelector('.tool-expand');
       if (!btn) return;
-      const argsEl = card.querySelector('.tool-args');
-      const resultEl = card.querySelector('.tool-result');
-      const hasContent = (argsEl && argsEl.textContent) || (resultEl && resultEl.textContent);
+      const hasContent = card.querySelector('.tool-args, .tool-result');
       btn.classList.toggle('hidden', !hasContent);
     }
 
