@@ -142,8 +142,10 @@ describe('SessionStore', () => {
     expect(store.list()).toEqual([]);
   });
 
-  it('list 返回按更新时间倒序', () => {
+  it('list 返回按更新时间倒序', async () => {
     const id1 = store.create('A');
+    // 等待 10ms 确保时间戳不同
+    await new Promise(r => setTimeout(r, 10));
     const id2 = store.create('B');
     // B 是后创建的，应该在前面
     const list = store.list();

@@ -1026,22 +1026,37 @@ async function startWechatChannel(): Promise<void> {
     const authedClient = new ILinkClient(botToken, baseUrl);
     broadcastWechat({ type: 'wechat_status', status: 'online', user_name: '微信用户' });
 
-    // 消息轮询
+    // 消息轮询 + Agent 管线处理
     let cursor = '';
     const pollMsgs = async () => {
       try {
         const updates = await authedClient.getupdates(cursor);
         cursor = (updates as any).next_cursor || cursor;
-        const events = (updates as any).events || (updates as any).data || [];
+        const events = (updates as any).events || (updates as any).msgs || [];
         for (const ev of events) {
-          if (ev.msg_type === 'text' || ev.type === 'text') {
-            const text = ev.text || ev.content || '';
-            const fromUser = ev.from_user || ev.sender || ev.from || '';
-            broadcastWechat({ type: 'wechat_msg', from_user: fromUser, text, ts: Date.now() });
+          
+          const text = ev.text || ev.content || ev.msg || '';
+          const fromUser = ev.from_user || ev.from_user_name || ev.sender || '';
+          const contextToken = ev.context_token || ev.ctx_token || '';
+          const toUserId = ev.to_user_id || ev.touser || '';
+
+          if (!text) continue;
+          console.log('[WeChat] 收到消息:', fromUser, '-', text.slice(0, 50));
+          broadcastWechat({ type: 'wechat_msg', from_user: fromUser, text, ts: Date.now() });
+
+          // 通过 MIA Agent 管线处理消息并自动回复
+          try {
+            const reply = await runAgentPipeline(text);
+            if (reply) {
+              await authedClient.sendText(toUserId || fromUser, reply, contextToken);
+              console.log('[WeChat] 已回复:', reply.slice(0, 50));
+            }
+          } catch (err) {
+            console.error('[WeChat] 处理消息失败:', err);
           }
         }
-      } catch {
-        // 轮询静默失败
+      } catch (err) {
+        console.error('[WeChat] 消息轮询错误:', err);
       }
       setTimeout(pollMsgs, 2000);
     };
