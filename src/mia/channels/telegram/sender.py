@@ -108,6 +108,7 @@ class TelegramSenderAgent(BaseAgent):
         self._client = TelegramClient(bot_token=self.bot_token)
         await self._client.start()
 
+        print(f"[32m[TelegramSender][0m ✓ 已就绪 (token={self.bot_token[:10]}...)")
         logger.info("[TelegramSender] Telegram 发送渠道已就绪 ✓")
 
     async def on_stop(self) -> None:
@@ -122,8 +123,9 @@ class TelegramSenderAgent(BaseAgent):
     async def handle(self, msg: Message) -> None:
         """消息分拣 — 文本/流式/语音"""
         if not self.enabled:
-            logger.debug("[TelegramSender] 渠道已禁用，忽略消息")
+            print(f"\033[33m[TelegramSender]\033[0m handle IGNORED (disabled): type={msg.msg_type.name}")
             return
+        print(f"\033[34m[TelegramSender]\033[0m handle: type={msg.msg_type.name} client={'OK' if self._client else 'NONE'}")
 
         if msg.msg_type == MessageType.SEND_TEXT:
             await self._handle_send_text(msg)
