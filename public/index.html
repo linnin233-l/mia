@@ -201,9 +201,15 @@
       display: flex;
       flex-direction: column;
       min-height: 0;
+      transition: flex 0.2s ease;
     }
     .side-section.thoughts { flex: 1; border-bottom: 1px solid var(--border); }
-    .side-section.tools { flex: 0 1 40%; }
+    .side-section.thoughts.collapsed { flex: 0 0 auto; }    /* 收起后只占 header 高度 */
+    .side-section.tools { flex: 0 1 50%; }
+    .side-section.tools.collapsed { flex: 0 0 auto; }       /* 收起后只占 header 高度 */
+    
+    /* 当 Thinking 收起时，Tools 自动撑满剩余空间 */
+    .side-section.thoughts.collapsed ~ .side-section.tools:not(.collapsed) { flex: 1; }
     
     .section-header {
       display: flex;
