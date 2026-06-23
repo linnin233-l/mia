@@ -1,13 +1,22 @@
 /**
- * MemoryStore — 两级文件知识存储
+ * MemoryStore — 文件持久化知识存储
  *
- * 结构: index.json + daily/YYYY-MM-DD.json 分片
- * Phase 4 将完整实现。
+ * 存储文件: <workspace_dir>/memory/store.json
+ * 格式: JSON 数组，每条 KnowledgeEntry 序列化为 plain object
+ *
+ * 特性:
+ *   - 自动加载/保存，重启不丢失
+ *   - 关键词匹配检索
+ *   - 去重 (同 content 合并)
+ *   - 最多保留 500 条
  *
  * 与 Python 版 memory/store.py 保持 1:1 语义映射。
  */
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { getConfig } from '../config.js';
 
 // ─── 常量 ────────────────────────────────────────────────
 
@@ -27,6 +36,19 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 // ─── KnowledgeEntry ──────────────────────────────────────
+
+/** 知识条目序列化格式 (用于 JSON 持久化) */
+interface KnowledgeEntryData {
+  id: string;
+  content: string;
+  category: string;
+  confidence: number;
+  keywords: string[];
+  importance: number;
+  source_sessions: string[];
+  created_at: string;
+  updated_at: string;
+}
 
 /** 知识条目 — 记忆的基本单元 */
 export class KnowledgeEntry {
@@ -66,6 +88,7 @@ export class KnowledgeEntry {
     source_sessions?: string[];
     id?: string;
     created_at?: string;
+    updated_at?: string;
   }) {
     this.id = opts.id || crypto.randomBytes(8).toString('hex');
     this.content = opts.content;
@@ -76,12 +99,42 @@ export class KnowledgeEntry {
     this.source_sessions = opts.source_sessions || [];
     const now = new Date().toISOString();
     this.created_at = opts.created_at || now;
-    this.updated_at = now;
+    this.updated_at = opts.updated_at || now;
   }
 
   /** 类别中文标签 */
   get category_label(): string {
     return CATEGORY_LABELS[this.category] || this.category;
+  }
+
+  /** 序列化为 plain object (用于 JSON) */
+  toJSON(): KnowledgeEntryData {
+    return {
+      id: this.id,
+      content: this.content,
+      category: this.category,
+      confidence: this.confidence,
+      keywords: this.keywords,
+      importance: this.importance,
+      source_sessions: this.source_sessions,
+      created_at: this.created_at,
+      updated_at: this.updated_at,
+    };
+  }
+
+  /** 从 plain object 反序列化 */
+  static fromJSON(data: KnowledgeEntryData): KnowledgeEntry {
+    return new KnowledgeEntry({
+      id: data.id,
+      content: data.content,
+      category: data.category,
+      confidence: data.confidence,
+      keywords: data.keywords,
+      importance: data.importance,
+      source_sessions: data.source_sessions,
+      created_at: data.created_at,
+      updated_at: data.updated_at,
+    });
   }
 }
 
@@ -103,22 +156,102 @@ export function todayStr(): string {
   return bj.toISOString().split('T')[0]!;
 }
 
-// ─── MemoryStore Stub ────────────────────────────────────
+// ─── MemoryStore ─────────────────────────────────────────
+
+/** 最大存储条目数 */
+const MAX_ENTRIES = 500;
 
 /**
  * MemoryStore — 文件持久化知识存储
  *
- * Phase 4 完整实现。当前为 stub。
+ * 数据存储在 <workspace>/memory/store.json。
+ * 每次 add/delete/clear 后自动保存。
  */
 export class MemoryStore {
   private _entries: KnowledgeEntry[] = [];
+  private _filePath: string | null = null;
 
-  load(): void {
-    // Phase 4: 从 index.json 加载
+  /** 获取存储文件路径 */
+  private get filePath(): string {
+    if (this._filePath) return this._filePath;
+    try {
+      const ws = getConfig().agent.workspace_dir;
+      const dir = path.join(ws, 'memory');
+      fs.mkdirSync(dir, { recursive: true });
+      this._filePath = path.join(dir, 'store.json');
+    } catch {
+      // 回退到项目根目录
+      this._filePath = path.resolve('memory', 'store.json');
+      fs.mkdirSync(path.dirname(this._filePath), { recursive: true });
+    }
+    return this._filePath;
   }
 
+  /** 从文件加载 */
+  load(): void {
+    try {
+      if (fs.existsSync(this.filePath)) {
+        const raw = fs.readFileSync(this.filePath, 'utf-8');
+        const data: KnowledgeEntryData[] = JSON.parse(raw);
+        this._entries = data.map((d) => KnowledgeEntry.fromJSON(d));
+        console.log(
+          `\x1b[34m[MemoryStore]\x1b[0m 已加载 ${this._entries.length} 条持久记忆`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `\x1b[33m[MemoryStore]\x1b[0m 加载失败: ${err}`,
+      );
+      this._entries = [];
+    }
+  }
+
+  /** 保存到文件 */
+  save(): void {
+    if (!this._filePath) {
+      try {
+        this.filePath; // 触发路径初始化
+      } catch {
+        return;
+      }
+    }
+    try {
+      const data = this._entries.map((e) => e.toJSON());
+      fs.writeFileSync(this.filePath!, JSON.stringify(data, null, 2), 'utf-8');
+    } catch (err) {
+      console.warn(
+        `\x1b[33m[MemoryStore]\x1b[0m 保存失败: ${err}`,
+      );
+    }
+  }
+
+  /** 添加条目 — 自动去重 + 保存 */
   add(entry: KnowledgeEntry): void {
+    // 去重: 相同 content 的条目合并
+    const existing = this._entries.find(
+      (e) => e.content === entry.content,
+    );
+    if (existing) {
+      // 更新置信度 (取高值)
+      existing.confidence = Math.max(existing.confidence, entry.confidence);
+      existing.keywords = [...new Set([...existing.keywords, ...entry.keywords])];
+      existing.importance = Math.max(existing.importance, entry.importance);
+      existing.source_sessions = [
+        ...new Set([...existing.source_sessions, ...entry.source_sessions]),
+      ];
+      existing.updated_at = new Date().toISOString();
+      this.save();
+      return;
+    }
+
     this._entries.push(entry);
+
+    // 超过上限时删除最旧的条目
+    if (this._entries.length > MAX_ENTRIES) {
+      this._entries = this._entries.slice(-MAX_ENTRIES);
+    }
+
+    this.save();
   }
 
   get count(): number {
@@ -136,21 +269,29 @@ export class MemoryStore {
   get_by_keywords(keywords: string[]): KnowledgeEntry[] {
     // 简单关键词匹配
     return this._entries.filter((e) =>
-      keywords.some((kw) =>
-        e.content.includes(kw) || e.keywords.some((k) => k.includes(kw)),
+      keywords.some(
+        (kw) =>
+          e.content.includes(kw) || e.keywords.some((k) => k.includes(kw)),
       ),
     );
   }
 
-  delete(_entryId: string): void {
-    this._entries = this._entries.filter((e) => e.id !== _entryId);
+  delete(entryId: string): void {
+    this._entries = this._entries.filter((e) => e.id !== entryId);
+    this.save();
   }
 
   clear(): void {
     this._entries = [];
+    this.save();
   }
 
   compact(_summary: string, _sourceSessionIds?: string[]): void {
-    // Phase 4: 压缩为摘要
+    // 简单压缩: 保留最近 50 条高重要度条目
+    const sorted = [...this._entries].sort(
+      (a, b) => b.importance - a.importance,
+    );
+    this._entries = sorted.slice(0, 50);
+    this.save();
   }
 }

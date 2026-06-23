@@ -16,7 +16,7 @@ import type { BaseProvider } from '../providers/base.js';
 import { BaseAgent } from './base.js';
 import { MessageBus } from '../bus/bus.js';
 import { Message, MessageType } from '../bus/message.js';
-import { MemoryStore, KnowledgeEntry, todayStr, CATEGORY_FACT } from '../memory/store.js';
+import { MemoryStore, KnowledgeEntry, todayStr, CATEGORY_FACT, CATEGORY_PREFERENCE } from '../memory/store.js';
 import { MemoryRetriever } from '../memory/retriever.js';
 import { getConfig } from '../config.js';
 
@@ -75,7 +75,7 @@ export class MemoryAgent extends BaseAgent {
   // 常量
   static readonly MAX_RETRIEVED = 5;
   static readonly MAX_WORKING_ENTRIES = 30;
-  static readonly EXTRACTION_TIMEOUT_MS = 8000;
+  static readonly EXTRACTION_TIMEOUT_MS = 15000; // 15s (MiMo 有时较慢)
   static readonly CONSOLIDATION_TIMEOUT_MS = 30000;
   static readonly DEFAULT_HISTORY_TURNS = 5;
 
@@ -401,22 +401,56 @@ export class MemoryAgent extends BaseAgent {
 
   // ─── 本地降级提取 ──────────────────────────────
 
+  /** 本地降级提取 — LLM 不可用时的备选方案 */
   private _localExtractKnowledge(
     userMsg: string,
-    _assistantReply: string,
+    assistantReply: string,
     sessionId: string,
   ): KnowledgeEntry | null {
-    const source = userMsg.trim();
-    if (source.length < 4) return null;
+    // 组合用户消息和助手回复，提取有意义的内容
+    const combined = `${userMsg} → ${assistantReply}`.trim();
+    if (combined.length < 5) return null;
 
-    const content = source.slice(0, 200) + (source.length > 200 ? '...' : '');
+    // 优先提取事实性知识：名字、偏好、决策等
+    const nameMatch = combined.match(
+      /(?:我叫|我是|名字是|称呼|叫我)\s*['"「]?([^'"「」,.，。\s]{1,20})/,
+    );
+    if (nameMatch) {
+      const name = nameMatch[1]!;
+      return new KnowledgeEntry({
+        content: `用户的名字是 ${name}`,
+        category: CATEGORY_FACT,
+        confidence: 0.6,
+        keywords: ['名字', name, '用户'],
+        importance: 0.8,
+        source_sessions: [sessionId],
+      });
+    }
 
-    // 简单分词
+    // 提取偏好
+    const prefMatch = combined.match(
+      /(?:喜欢|偏好|常用|想要|想用|想了解)\s*(.+?)(?:[。！，,\.!]|$)/,
+    );
+    if (prefMatch) {
+      const pref = prefMatch[1]!.trim().slice(0, 100);
+      if (pref.length >= 2) {
+        return new KnowledgeEntry({
+          content: `用户偏好: ${pref}`,
+          category: CATEGORY_PREFERENCE,
+          confidence: 0.5,
+          keywords: ['偏好', pref.slice(0, 10)],
+          importance: 0.6,
+          source_sessions: [sessionId],
+        });
+      }
+    }
+
+    // 简单分词提取关键词
     const tokens: string[] = [];
-    const asciiTokens = source.match(/[a-zA-Z_][a-zA-Z0-9_]{2,}/g) || [];
+    const asciiTokens = userMsg.match(/[a-zA-Z_][a-zA-Z0-9_]{2,}/g) || [];
     tokens.push(...asciiTokens);
 
-    const chineseChars = source.match(/[\u4e00-\u9fff]/g) || [];
+    const chineseChars = userMsg.match(/[\u4e00-\u9fff]/g) || [];
     const seen = new Set<string>();
     for (let i = 0; i < chineseChars.length - 1; i++) {
       const bigram = chineseChars[i]! + chineseChars[i + 1]!;
@@ -428,12 +462,19 @@ export class MemoryAgent extends BaseAgent {
 
     const stopwords = new Set([
       '请问', '帮我', '我想', '可以', '什么', '怎么', '如何',
-      '这个', '那个', '这是', '查询', '一下', '用户说',
+      '这个', '那个', '这是', '查询', '一下', '用户说', '你好',
+      '谢谢', '再见', '早上好', '晚上好',
     ]);
     const keywords = tokens.filter((t) => !stopwords.has(t)).slice(0, 5);
 
+    // 用助手回复的前 100 字作为摘要（比直接复制用户输入更有用）
+    const summary =
+      assistantReply.length > 3
+        ? assistantReply.slice(0, 150) + (assistantReply.length > 150 ? '...' : '')
+        : combined.slice(0, 150);
+
     return new KnowledgeEntry({
-      content,
+      content: summary,
       category: CATEGORY_FACT,
       confidence: 0.3,
       keywords,
