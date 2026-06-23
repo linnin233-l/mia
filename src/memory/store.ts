@@ -189,6 +189,9 @@ export class MemoryStore {
 
   /** 从文件加载 — 兼容 Python 版 index.json + daily/ 格式 */
   load(): void {
+    // 记录是否自定义路径（测试场景），在访问 this.filePath 之前
+    const isCustomPath = !!this._filePath;
+
     // 1. 优先加载 JS 格式 store.json
     try {
       if (fs.existsSync(this.filePath)) {
@@ -210,9 +213,8 @@ export class MemoryStore {
     const memoryDir = path.dirname(this.filePath);
     const indexPath = path.join(memoryDir, 'index.json');
     if (!fs.existsSync(indexPath)) {
-      // 仅在默认 workspace 路径时检查备用 data/memory/ 目录
-      // 不检查自定义 _filePath (测试/临时目录)
-      if (!this._filePath) {
+      // 仅在默认路径时检查备用 data/memory/ 目录 (Python 版默认)
+      if (!isCustomPath) {
         const altDir = path.resolve('data', 'memory');
         const altIndex = path.join(altDir, 'index.json');
         if (fs.existsSync(altIndex)) {
