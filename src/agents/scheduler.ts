@@ -131,6 +131,8 @@ export class SchedulerAgent extends BaseAgent {
   private _consecutiveTasks = 0;
   private _taskHistory: string[] = [];
   private _decisionHistory: Decision[] = [];
+  /** 缓存的 memory_context（来自初始 USER_INTENT，TASK_RESULT 后复用） */
+  private _savedMemoryContext = '';
 
   constructor(
     bus: MessageBus,
@@ -169,6 +171,7 @@ export class SchedulerAgent extends BaseAgent {
     this._consecutiveTasks = 0;
     this._taskHistory = [];
     this._decisionHistory = [];
+    this._savedMemoryContext = (msg.payload['memory_context'] as string) || '';
 
     this._printThought('分析用户意图', (msg.payload['intent'] as string) || '');
     await this._decisionLoop(msg);
@@ -192,11 +195,11 @@ export class SchedulerAgent extends BaseAgent {
   private async _decisionLoop(triggerMsg: Message): Promise<void> {
     // 安全检查
     if (this._iteration >= SchedulerAgent.MAX_ITERATIONS) {
-      await this._forceReply('已达到最大处理轮数，我先给你当前的结果。');
+      await this._forceReply('已达到最大处理轮数，我先给你当前的结果。', triggerMsg);
       return;
     }
     if (this._consecutiveTasks >= SchedulerAgent.MAX_CONSECUTIVE_TASKS) {
-      await this._forceReply('已经连续执行了多个任务，我先汇总一下结果。');
+      await this._forceReply('已经连续执行了多个任务，我先汇总一下结果。', triggerMsg);
       return;
     }
 
@@ -206,7 +209,7 @@ export class SchedulerAgent extends BaseAgent {
     // 调用 LLM 决策 (主 + fallback)
     let response = await this._tryCallLlm(messages, 4096, 0.3);
     if (response === null) {
-      await this._forceReply('抱歉，系统处理遇到问题。');
+      await this._forceReply('抱歉，系统处理遇到问题。', triggerMsg);
       return;
     }
 
@@ -228,7 +231,7 @@ export class SchedulerAgent extends BaseAgent {
     }
 
     if (!decision) {
-      await this._forceReply('抱歉，我暂时无法做出决策，请重新描述你的需求。');
+      await this._forceReply('抱歉，我暂时无法做出决策，请重新描述你的需求。', triggerMsg);
       return;
     }
 
@@ -310,9 +313,19 @@ export class SchedulerAgent extends BaseAgent {
       );
       await this.send(taskMsg);
     } else if (action === 'done') {
+      // LLM 明确结束 → 发送文本让 Sender 发出 CONVERSATION_DONE
       this._printThought('任务完成', reasoning);
+      const target = this._resolveOutputTarget();
+      const meta = this._channelMeta(triggerMsg);
+      await this.bus.publish(makeSendText(
+        reasoning || '处理完成。',
+        this._sessionId,
+        target,
+        meta.context_token,
+        meta.to_user_id,
+      ));
     } else {
-      await this._forceReply('处理完成。');
+      await this._forceReply('处理完成。', triggerMsg);
     }
   }
 
@@ -389,7 +402,10 @@ export class SchedulerAgent extends BaseAgent {
     ];
 
     // 注入 MemoryAgent 提供的记忆上下文
-    const memoryContext = (triggerMsg.payload['memory_context'] as string) || '';
+    // 优先取当前消息的，fallback 到缓存的（TASK_RESULT 后可能丢失）
+    const memoryContext =
+      ((triggerMsg.payload['memory_context'] as string) || '') ||
+      this._savedMemoryContext;
     if (memoryContext) {
       messages.push({
         role: 'user',
@@ -446,8 +462,9 @@ export class SchedulerAgent extends BaseAgent {
     // 决策历史 (最近 3 轮，精简版)
     if (this._decisionHistory.length > 0) {
       const parts = ['## 之前的决策历史'];
-      for (let i = 0; i < Math.min(this._decisionHistory.length, 3); i++) {
-        const d = this._decisionHistory[this._decisionHistory.length - 3 + i]!;
+      const recent = this._decisionHistory.slice(-3);
+      for (let i = 0; i < recent.length; i++) {
+        const d = recent[i]!;
         parts.push(
           `第${i + 1}轮: action=${d.action}, reasoning=${(d.reasoning || '').slice(0, 150)}`,
         );
@@ -548,10 +565,13 @@ export class SchedulerAgent extends BaseAgent {
     }
   }
 
-  /** 强制回复 — 当循环无法正常完成时 */
-  private async _forceReply(message: string): Promise<void> {
+  /** 强制回复 — 当循环无法正常完成时，携带渠道元数据 */
+  private async _forceReply(message: string, triggerMsg?: Message): Promise<void> {
     const target = this._resolveOutputTarget();
-    await this.bus.publish(makeSendText(message, this._sessionId, target));
+    const meta = triggerMsg ? this._channelMeta(triggerMsg) : { context_token: '', to_user_id: '' };
+    await this.bus.publish(makeSendText(
+      message, this._sessionId, target, meta.context_token, meta.to_user_id,
+    ));
   }
 
   /** 结构化输出思考过程 */

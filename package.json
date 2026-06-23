@@ -6,10 +6,10 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "dev": "tsx src/index.ts",
-    "dev:wechat": "tsx src/index.ts --wechat",
+    "dev": "tsx src/main.ts",
+    "dev:wechat": "tsx src/main.ts --wechat",
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "node dist/main.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

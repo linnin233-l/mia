@@ -59,8 +59,11 @@ export class ReceiverAgent extends BaseAgent {
 
     // 分析输入内容
     const text = (msg.payload['text'] as string) || '';
-    const imagePath = msg.payload['image'] as string | undefined;
-    const voicePath = msg.payload['voice'] as string | undefined;
+    // 支持两种来源：直接 image/voice key（CLI main.ts）或 media_refs 数组（WeChat）
+    const imagePath = (msg.payload['image'] as string) ||
+      (msg.payload['media_refs'] as string[] | undefined)?.find(f => /\.(png|jpg|jpeg|gif|webp)$/i.test(f));
+    const voicePath = (msg.payload['voice'] as string) ||
+      (msg.payload['media_refs'] as string[] | undefined)?.find(f => /\.(silk|wav|mp3|m4a|ogg)$/i.test(f));
 
     const intentParts: string[] = [];
     const mediaRefs: string[] = [];

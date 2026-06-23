@@ -466,7 +466,7 @@ export function makeRawInput(
   toUserId = '',
 ): Message {
   const payload: Record<string, unknown> = {
-    content,
+    text: content,
     media_refs: mediaRefs,
   };
   if (contextToken) payload['context_token'] = contextToken;

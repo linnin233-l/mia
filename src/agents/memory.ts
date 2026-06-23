@@ -356,9 +356,10 @@ export class MemoryAgent extends BaseAgent {
     assistantReply: string,
     sessionId: string,
   ): Promise<KnowledgeEntry[]> {
+    // 安全替换：转义 $ 避免 String.replace 的特殊替换模式
     const prompt = WORKING_KNOWLEDGE_PROMPT
-      .replace('{user_msg}', userMsg.slice(0, 500))
-      .replace('{assistant_reply}', assistantReply.slice(0, 500));
+      .replace('{user_msg}', userMsg.slice(0, 500).replace(/\$/g, '$$$$'))
+      .replace('{assistant_reply}', assistantReply.slice(0, 500).replace(/\$/g, '$$$$'));
     const messages = [{ role: 'user' as const, content: prompt }];
 
     const response = await this._callLlmWithFallback(messages, 384, 0.3);
