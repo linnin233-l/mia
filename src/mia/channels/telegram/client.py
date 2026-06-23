@@ -158,6 +158,50 @@ class TelegramClient:
 
     # ─── 消息发送 ──────────────────────────────────────
 
+    async def send_chat_action(
+        self,
+        chat_id: int,
+        action: str = "typing",
+    ) -> Dict[str, Any]:
+        """发送聊天状态指示器（typing / record_voice 等）
+
+        Args:
+            chat_id: 目标聊天 ID
+            action: 状态类型
+                typing - 正在输入文字
+                upload_photo - 上传图片
+                record_video / upload_video - 视频
+                record_voice / upload_voice - 语音
+                upload_document - 文件
+                find_location - 位置
+        """
+        return await self._post("sendChatAction", json_data={
+            "chat_id": chat_id,
+            "action": action,
+        })
+
+    async def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+    ) -> Dict[str, Any]:
+        """编辑已发送的消息（实现流式更新）
+
+        Args:
+            chat_id: 目标聊天 ID
+            message_id: 要编辑的消息 ID
+            text: 新文本内容
+
+        Returns:
+            API 响应（包含更新后的 Message 对象）
+        """
+        return await self._post("editMessageText", json_data={
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text[:4096],
+        })
+
     async def send_message(
         self,
         chat_id: int,

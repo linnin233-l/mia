@@ -81,10 +81,12 @@ class TelegramSenderAgent(BaseAgent):
         # TelegramClient（延迟创建）
         self._client = None  # type: Optional[TelegramClient]
 
-        # 流式输出缓冲
+        # 流式输出缓冲（Telegram 伪流式 = sendMessage + editMessageText）
         self._stream_buffer: str = ""
         self._stream_chat_id: Optional[int] = None
-        self._stream_msg_id: str = ""
+        self._stream_msg_id: Optional[int] = None  # Telegram message_id
+        self._stream_last_edit: float = 0.0        # 上次编辑时间戳
+        self._stream_last_len: int = 0              # 上次编辑时的文本长度
 
     # ─── 生命周期 ──────────────────────────────────────
 
@@ -123,9 +125,7 @@ class TelegramSenderAgent(BaseAgent):
     async def handle(self, msg: Message) -> None:
         """消息分拣 — 文本/流式/语音"""
         if not self.enabled:
-            print(f"\033[33m[TelegramSender]\033[0m handle IGNORED (disabled): type={msg.msg_type.name}")
             return
-        print(f"\033[34m[TelegramSender]\033[0m handle: type={msg.msg_type.name} client={'OK' if self._client else 'NONE'}")
 
         if msg.msg_type == MessageType.SEND_TEXT:
             await self._handle_send_text(msg)
@@ -148,9 +148,8 @@ class TelegramSenderAgent(BaseAgent):
         """发送纯文本消息到 Telegram"""
         chat_id = self._get_chat_id(msg)
         text = msg.payload.get("message", "") or msg.payload.get("text", "")
-        print(f"\033[34m[TelegramSender]\033[0m 收到 SEND_TEXT: chat={chat_id} text_len={len(text)}")
         if not chat_id:
-            print(f"\033[33m[TelegramSender]\033[0m ⚠ 缺少 chat_id，无法发送")
+            logger.warning("[TelegramSender] SEND_TEXT 缺少 chat_id")
             return
         if not text:
             return
@@ -184,33 +183,81 @@ class TelegramSenderAgent(BaseAgent):
             print(f"\033[31m[TelegramSender]\033[0m ✗ 发送异常: {e}")
             logger.error("[TelegramSender] 发送文字失败: %s", e)
 
-    # ─── 流式回复 ──────────────────────────────────────
+    # ─── 流式回复（编辑消息实现伪流式）──────────────────
 
-    def _handle_stream_start(self, msg: Message) -> None:
-        """流式开始 — 初始化缓冲"""
+    async def _handle_stream_start(self, msg: Message) -> None:
+        """流式开始 — typing + 占位消息（仿 QwenPaw v1.1.8 方案）"""
+        chat_id = self._get_chat_id(msg)
+        if not chat_id or not self._client:
+            self._stream_chat_id = None
+            return
+
         self._stream_buffer = ""
-        self._stream_chat_id = self._get_chat_id(msg)
-        self._stream_msg_id = msg.msg_id
+        self._stream_chat_id = chat_id
+        self._stream_msg_id = None
+        self._stream_last_edit = 0.0
+        self._stream_last_len = 0
 
-    def _handle_stream_chunk(self, msg: Message) -> None:
-        """流式块 — 追加到缓冲（不立即发送，等 END 时一次性发送）"""
+        try:
+            # ① 显示 typing...
+            await self._client.send_chat_action(chat_id, "typing")
+            # ② 发占位消息
+            result = await self._client.send_message(chat_id, "思考中...")
+            if result.get("ok"):
+                msg_data = result.get("result", {})
+                self._stream_msg_id = msg_data.get("message_id")
+            logger.debug("[TelegramSender] 流式开始: chat=%s msg_id=%s", chat_id, self._stream_msg_id)
+        except Exception as e:
+            logger.warning("[TelegramSender] 流式开始失败: %s", e)
+            self._stream_chat_id = None
+
+    async def _handle_stream_chunk(self, msg: Message) -> None:
+        """流式块 — 累积 + 节流编辑（每 ~0.5s 或每 30 字更新一次）"""
+        if not self._stream_chat_id or not self._stream_msg_id or not self._client:
+            return
+
         chunk = msg.payload.get("delta", "")
         self._stream_buffer += chunk
 
+        # 节流：避免每次 chunk 都发 HTTP 请求
+        import time
+        new_len = len(self._stream_buffer)
+        elapsed = time.time() - self._stream_last_edit
+        grew_enough = new_len - self._stream_last_len >= 30
+
+        if grew_enough or elapsed >= 0.5:
+            try:
+                await self._client.edit_message_text(
+                    self._stream_chat_id,
+                    self._stream_msg_id,
+                    self._stream_buffer,
+                )
+                self._stream_last_edit = time.time()
+                self._stream_last_len = new_len
+            except Exception:
+                pass  # 编辑失败不影响最终发送
+
     async def _handle_stream_end(self, msg: Message) -> None:
-        """流式结束 — 发送完整文本到 Telegram"""
+        """流式结束 — 最终编辑 + CONVERSATION_DONE"""
         chat_id = self._stream_chat_id or self._get_chat_id(msg)
         full_text = self._stream_buffer or msg.payload.get("message", "")
-        print(f"\033[34m[TelegramSender]\033[0m STREAM_END: chat={chat_id} text_len={len(full_text)} client={'OK' if self._client else 'NONE'}")
 
-        if chat_id and full_text:
+        if chat_id and full_text and self._stream_msg_id and self._client:
+            try:
+                await self._client.edit_message_text(chat_id, self._stream_msg_id, full_text)
+                print(f"\033[32m[TelegramSender]\033[0m ✓ 已发送: chat={chat_id} len={len(full_text)}")
+            except Exception as e:
+                logger.error("[TelegramSender] 最终编辑失败: %s，降级为 sendMessage", e)
+                # 编辑失败 → 直接发新消息
+                await self._send_text(chat_id, full_text)
+        elif chat_id and full_text:
+            # 没有 message_id（stream_start 失败）→ 直接发
             await self._send_text(chat_id, full_text)
-        else:
-            print(f"\033[33m[TelegramSender]\033[0m ⚠ STREAM_END 无法发送: chat={chat_id} has_text={bool(full_text)}")
 
         await self._publish_done(msg, full_text)
         self._stream_buffer = ""
         self._stream_chat_id = None
+        self._stream_msg_id = None
 
     # ─── 语音回复 ──────────────────────────────────────
 
