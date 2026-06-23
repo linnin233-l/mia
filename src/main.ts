@@ -925,9 +925,12 @@ function handleWsConnection(ws: WebSocket): void {
       created_at: e.created_at,
     }));
   }, async (action) => {
-    // 微信控制
+    // 微信控制 — 真正启动微信渠道
     if (action === 'start') {
-      broadcastWechat({ type: 'wechat_status', status: 'qr_pending', user_name: '' });
+      startWechatChannel().catch((err) => {
+        console.error('[WeChat] 启动失败:', err);
+        broadcastWechat({ type: 'wechat_status', status: 'offline', user_name: '' });
+      });
     } else {
       broadcastWechat({ type: 'wechat_status', status: 'offline', user_name: '' });
     }
