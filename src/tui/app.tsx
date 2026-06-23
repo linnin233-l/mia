@@ -255,15 +255,18 @@ export const App: React.FC<AppProps> = ({
     };
     b.onStreamStart = () => {
       dispatch({ type: 'SET_STREAMING', text: '' });
+      dispatch({ type: 'SET_STATUS', activeAgent: 'scheduler' });
     };
     b.onStreamChunk = (delta: string) => {
       dispatch({ type: 'APPEND_STREAMING', delta });
     };
     b.onStreamEnd = (fullText: string) => {
       dispatch({ type: 'FINISH_STREAMING', content: fullText });
+      dispatch({ type: 'SET_STATUS', activeAgent: '' });
     };
     b.onSendText = (text: string) => {
       dispatch({ type: 'FINISH_STREAMING', content: text });
+      dispatch({ type: 'SET_STATUS', activeAgent: '' });
     };
     b.onThought = (agent: string, title: string, detail: string) => {
       dispatch({
@@ -276,6 +279,7 @@ export const App: React.FC<AppProps> = ({
           timestamp: Date.now(),
         },
       });
+      dispatch({ type: 'SET_STATUS', activeAgent: agent });
     };
   }, []);
 
@@ -359,6 +363,8 @@ export const App: React.FC<AppProps> = ({
         model={state.status.model}
         memoryCount={state.status.memoryCount}
         sessionId={state.status.sessionId}
+        activeAgent={state.status.activeAgent}
+        isProcessing={state.isProcessing}
       />
 
       <Box flexDirection="row" flexGrow={1}>

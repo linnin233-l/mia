@@ -9,9 +9,17 @@ interface HeaderProps {
   model: string;
   memoryCount: number;
   sessionId: string;
+  activeAgent?: string;   // 当前活跃的 Agent 名称
+  isProcessing?: boolean;
 }
 
-export const Header: React.FC<HeaderProps> = ({ model, memoryCount, sessionId }) => (
+export const Header: React.FC<HeaderProps> = ({
+  model,
+  memoryCount,
+  sessionId,
+  activeAgent,
+  isProcessing,
+}) => (
   <Box
     flexDirection="row"
     justifyContent="space-between"
@@ -27,6 +35,13 @@ export const Header: React.FC<HeaderProps> = ({ model, memoryCount, sessionId })
       <Text color="yellow">Model: {model}</Text>
       <Text dimColor> | </Text>
       <Text color="green">Mem: {memoryCount}条</Text>
+      {isProcessing && activeAgent && (
+        <>
+          <Text dimColor> | </Text>
+          <Text color="magenta">[{activeAgent}]</Text>
+          <Text color="yellow">▊</Text>
+        </>
+      )}
     </Box>
     <Box>
       <Text dimColor>Session: {sessionId.slice(0, 8)}</Text>

@@ -23,7 +23,7 @@ export type TuiAction =
   | { type: 'UPDATE_TOOL_CALL'; id: string; result: string; status: 'success' | 'error' }
   | { type: 'SET_MEMORIES'; entries: MemoryEntry[] }
   | { type: 'TOGGLE_PANEL'; panel: 'thinking' | 'tools' | 'memory' }
-  | { type: 'SET_STATUS'; model?: string; memoryCount?: number; sessionId?: string }
+  | { type: 'SET_STATUS'; model?: string; memoryCount?: number; sessionId?: string; activeAgent?: string }
   | { type: 'SET_FULLSCREEN'; mode: 'chat' | 'memory' }
   | { type: 'SET_MEMORY_PAGE'; page: number }
   | { type: 'CLEAR_CHAT' };
@@ -47,6 +47,7 @@ export function createInitialState(): TuiState {
       model: 'mimo-v2.5-pro',
       memoryCount: 0,
       sessionId: '',
+      activeAgent: '',
     },
     fullscreenMode: 'chat',
     memoryPage: 0,
@@ -133,6 +134,7 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
           ...(action.model !== undefined && { model: action.model }),
           ...(action.memoryCount !== undefined && { memoryCount: action.memoryCount }),
           ...(action.sessionId !== undefined && { sessionId: action.sessionId }),
+          ...(action.activeAgent !== undefined && { activeAgent: action.activeAgent }),
         },
       };
 

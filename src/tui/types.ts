@@ -67,6 +67,7 @@ export interface TuiState {
     model: string;
     memoryCount: number;
     sessionId: string;
+    activeAgent: string;
   };
   /** 全屏模式 */
   fullscreenMode: 'chat' | 'memory';
