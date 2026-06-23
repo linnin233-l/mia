@@ -1,1 +1,2 @@
-// Audio subsystem will be added in Phase 8
+export { recordUntilKeypress } from './recorder.js';
+export { playAudio } from './playback.js';
