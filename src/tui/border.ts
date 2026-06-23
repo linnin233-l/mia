@@ -61,17 +61,15 @@ function draw() {
 
 // ─── 启动 ────────────────────────────────────────────────
 function main() {
-  // 交替屏幕 + 隐藏光标
-  process.stdout.write('\x1b[?1049h\x1b[?25l');
-
-  // 初始绘制（同步，紧跟交替屏幕）
-  draw();
-
   // raw mode
   readline.emitKeypressEvents(process.stdin);
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
   }
+
+  // 交替屏幕 + 隐藏光标 + 首帧（一次 write，避免中间态）
+  process.stdout.write('\x1b[?1049h\x1b[?25l');
+  draw();
 
   // resize 时重绘
   process.stdout.on('resize', draw);
