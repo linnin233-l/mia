@@ -953,6 +953,21 @@ async def run_cli_interactive() -> None:
         print("\033[90m已关闭。\033[0m")
 
 
+
+def _generate_qr_base64(data: str) -> str:
+    """生成二维码 base64 PNG"""
+    try:
+        import qrcode, io, base64
+        qr = qrcode.QRCode(border=2)
+        qr.add_data(data)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return data
+
 def _session_to_dict(s) -> dict:
     """SessionInfo 转 dict（API 响应用）"""
     return {
@@ -1222,8 +1237,10 @@ async def run_server(port: int) -> None:
             if not qrcode:
                 await client.stop()
                 return JSONResponse(status_code=500, content={"error": "获取二维码失败"})
+            # 本地生成 base64 PNG 二维码图片（避免外部 API 不可用）
+            qr_base64 = _generate_qr_base64(img if img and not img.startswith('http') else qrcode)
             _qrcode_sessions[qrcode] = {"client": client, "status": "waiting"}
-            return {"qrcode": qrcode, "image": img}
+            return {"qrcode": qrcode, "image": qr_base64}
         except Exception as e:
             return JSONResponse(status_code=500, content={"error": str(e)})
 

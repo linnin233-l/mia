@@ -157,19 +157,9 @@ async function startQrLogin() {
   try {
     const { data } = await client.post('/interface/wechat/qrcode')
     qrCode.value = data.qrcode
-    if (data.image) {
-      if (data.image.startsWith('data:')) {
-        qrImage.value = data.image
-      } else if (data.image.startsWith('http')) {
-        // iLink returned a URL (webpage), use QR code API to generate image
-        qrImage.value = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(data.image)
-      } else {
-        qrImage.value = 'data:image/png;base64,' + data.image
-      }
-    }
-    // Fallback: generate QR from the qrcode string itself
-    if (!qrImage.value && data.qrcode) {
-      qrImage.value = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(data.qrcode)
+    qrImage.value = data.image || ''
+    if (qrImage.value && !qrImage.value.startsWith('data:')) {
+      qrImage.value = 'data:image/png;base64,' + qrImage.value
     }
     qrStatus.value = 'waiting'
     startQrPolling()
