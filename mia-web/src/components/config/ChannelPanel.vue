@@ -96,9 +96,12 @@
         <div v-else-if="qrStatus === 'expired'" style="color: #f56c6c; margin-bottom: 12px">
           二维码已过期，请重新获取
         </div>
-        <img v-if="qrImage" :src="qrImage" style="max-width: 100%; border: 1px solid #eee; border-radius: 8px" />
+        <img v-if="qrImage" :src="qrImage" style="max-width: 100%; border: 1px solid #eee; border-radius: 8px" @error="qrImage = ''" />
         <div v-if="!qrImage && qrLoading" style="padding: 40px; color: #909399">
           正在获取二维码...
+        </div>
+        <div v-if="qrImage" style="margin-top: 12px; word-break: break-all; font-size: 12px">
+          <a :href="qrImage" target="_blank" style="color: #409EFF">点此打开二维码链接</a>
         </div>
         <div v-if="qrStatus === 'expired'" style="margin-top: 12px">
           <el-button size="small" type="primary" @click="startQrLogin">重新获取</el-button>
@@ -158,10 +161,15 @@ async function startQrLogin() {
       if (data.image.startsWith('data:')) {
         qrImage.value = data.image
       } else if (data.image.startsWith('http')) {
-        qrImage.value = data.image
+        // iLink returned a URL (webpage), use QR code API to generate image
+        qrImage.value = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(data.image)
       } else {
         qrImage.value = 'data:image/png;base64,' + data.image
       }
+    }
+    // Fallback: generate QR from the qrcode string itself
+    if (!qrImage.value && data.qrcode) {
+      qrImage.value = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(data.qrcode)
     }
     qrStatus.value = 'waiting'
     startQrPolling()
