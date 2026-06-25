@@ -82,26 +82,23 @@
     </div>
 
     <!-- QR Code Login Dialog -->
-    <el-dialog v-model="qrDialogVisible" title="微信扫码登录" width="420px" @close="qrImage = ''">
+    <el-dialog v-model="qrDialogVisible" title="微信扫码登录" width="420px" @close="stopQrPolling">
       <div style="text-align: center">
-        <div style="color: #606266; margin-bottom: 12px; font-size: 13px">
-          1. 用手机微信扫描下方二维码<br/>
-          2. 在手机上确认登录后, 将获取到的 Token 粘贴到下方
+        <div style="margin-bottom: 12px; font-size: 13px" :style="{ color: qrStatus === 'confirmed' ? '#67c23a' : qrStatus === 'expired' ? '#f56c6c' : '#606266' }">
+          <span v-if="qrStatus === 'waiting'">请使用手机微信扫描二维码</span>
+          <span v-else-if="qrStatus === 'scanned'">已扫描，请在手机上确认登录</span>
+          <span v-else-if="qrStatus === 'confirmed'">登录成功！Token 已自动保存</span>
+          <span v-else-if="qrStatus === 'expired'">二维码已过期</span>
+          <span v-else>正在获取二维码...</span>
         </div>
         <img v-if="qrImage" :src="qrImage" style="max-width: 250px; border: 1px solid #eee; border-radius: 8px; margin-bottom: 12px" @error="qrImage = ''" />
-        <div v-if="!qrImage && qrLoading" style="padding: 40px; color: #909399">加载中...</div>
+        <div v-if="!qrImage && qrLoading" style="padding: 40px; color: #909399">获取中...</div>
         <div v-if="qrUrl" style="margin-bottom: 12px; word-break: break-all; font-size: 12px">
-          <a :href="qrUrl" target="_blank" style="color: #409EFF">点此打开二维码链接</a>
+          <a :href="qrUrl" target="_blank" style="color: #409EFF">点此打开链接</a>
         </div>
-        <el-input
-          v-model="qrTokenInput"
-          placeholder="扫码后在此粘贴 Token"
-          size="small"
-          style="margin-bottom: 8px"
-        />
-        <el-button type="primary" size="small" :loading="qrSaving" @click="saveQrToken" :disabled="!qrTokenInput.trim()">
-          保存 Token
-        </el-button>
+        <div v-if="qrStatus === 'expired'">
+          <el-button size="small" type="primary" @click="startQrLogin">重新获取</el-button>
+        </div>
       </div>
     </el-dialog>
   </div>
@@ -129,8 +126,9 @@ const qrDialogVisible = ref(false)
 const qrLoading = ref(false)
 const qrImage = ref('')
 const qrUrl = ref('')
-const qrTokenInput = ref('')
-const qrSaving = ref(false)
+const qrCode = ref('')
+const qrStatus = ref('')
+let qrTimer: any = null
 
 onMounted(async () => {
   await channelStore.fetchStatus()
@@ -150,37 +148,46 @@ async function startQrLogin() {
   qrDialogVisible.value = true
   qrImage.value = ''
   qrUrl.value = ''
-  qrTokenInput.value = ''
+  qrStatus.value = ''
   try {
     const { data } = await client.post('/interface/wechat/qrcode')
+    qrCode.value = data.qrcode
     qrImage.value = data.image || ''
     qrUrl.value = data.url || ''
     if (qrImage.value && !qrImage.value.startsWith('data:')) {
       qrImage.value = 'data:image/png;base64,' + qrImage.value
     }
+    qrStatus.value = 'waiting'
+    startQrPolling()
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.error || '获取二维码失败')
+    ElMessage.error(e?.response?.data?.error || '获取失败')
     qrDialogVisible.value = false
   } finally {
     qrLoading.value = false
   }
 }
 
-async function saveQrToken() {
-  const token = qrTokenInput.value.trim()
-  if (!token) return
-  qrSaving.value = true
-  try {
-    await updateInterfaceToken('wechat', token)
-    details.value['wechat'] = await getInterfaceDetail('wechat')
-    await channelStore.fetchStatus()
-    qrDialogVisible.value = false
-    ElMessage.success('微信 Token 已保存')
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.error || '保存失败')
-  } finally {
-    qrSaving.value = false
-  }
+function startQrPolling() {
+  stopQrPolling()
+  qrTimer = setInterval(async () => {
+    if (!qrCode.value || qrStatus.value === 'confirmed') return
+    try {
+      const { data } = await client.get(`/interface/wechat/qrcode/${qrCode.value}`)
+      qrStatus.value = data.status
+      if (data.status === 'confirmed') {
+        stopQrPolling()
+        details.value['wechat'] = await getInterfaceDetail('wechat')
+        await channelStore.fetchStatus()
+        setTimeout(() => { qrDialogVisible.value = false }, 2000)
+      } else if (data.status === 'expired' || data.status === 'timeout') {
+        stopQrPolling()
+      }
+    } catch {}
+  }, 2000)
+}
+
+function stopQrPolling() {
+  if (qrTimer) { clearInterval(qrTimer); qrTimer = null }
 }
 
 function startEdit(name: string) { editState[name].editing = true; editState[name].editToken = '' }
