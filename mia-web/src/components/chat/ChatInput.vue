@@ -4,13 +4,13 @@
       v-model="text"
       type="textarea"
       :rows="2"
-      placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
+      placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
       resize="none"
       :disabled="loading"
-      @keydown.enter.exact.prevent="handleSend"
+      @keydown.enter.exact.prevent="handle发送"
     />
-    <el-button type="primary" :disabled="!text.trim() || loading" @click="handleSend" :loading="loading">
-      Send
+    <el-button type="primary" :disabled="!text.trim() || loading" @click="handle发送" :loading="loading">
+      发送
     </el-button>
   </div>
 </template>
@@ -23,7 +23,7 @@ const emit = defineEmits<{ send: [text: string] }>()
 
 const text = ref('')
 
-function handleSend() {
+function handle发送() {
   const msg = text.value.trim()
   if (!msg) return
   emit('send', msg)

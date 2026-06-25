@@ -3,7 +3,7 @@
     <MessageBubble v-for="msg in messages" :key="msg.id" :msg="msg" />
     <div v-if="loading" style="color: #909399; text-align: center; padding: 12px">
       <el-icon class="is-loading"><Loading /></el-icon>
-      Thinking...
+      思考中...
     </div>
     <div ref="bottom" />
   </div>

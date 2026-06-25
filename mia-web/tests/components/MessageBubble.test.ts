@@ -7,7 +7,7 @@ describe('MessageBubble', () => {
     const msg = { id: '1', role: 'user' as const, content: 'Hello', timestamp: Date.now() }
     const wrapper = mount(MessageBubble, { props: { msg } })
     expect(wrapper.text()).toContain('Hello')
-    expect(wrapper.text()).toContain('You')
+    expect(wrapper.text()).toContain('你')
   })
 
   it('renders assistant message correctly', () => {

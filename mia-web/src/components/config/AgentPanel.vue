@@ -1,13 +1,13 @@
 <template>
   <div>
-    <h3>Agent Model Assignments</h3>
-    <p style="font-size: 12px; color: #909399; margin: 0 0 12px">Loaded from RuntimeConfig at startup. Changes save immediately.</p>
-    <div v-if="loading" style="color: #909399; padding: 20px">Loading config...</div>
+    <h3>Agent 模型分配</h3>
+    <p style="font-size: 12px; color: #909399; margin: 0 0 12px">从 RuntimeConfig 加载，修改即时生效。</p>
+    <div v-if="loading" style="color: #909399; padding: 20px">加载配置中...</div>
     <el-table v-else :data="agentRows" stripe>
       <el-table-column label="Agent" width="130">
         <template #default="{ row }">{{ row.label }}</template>
       </el-table-column>
-      <el-table-column label="Primary Model" width="210">
+      <el-table-column label="主模型" width="210">
         <template #default="{ row }">
           <el-select
             v-if="row.hasModel"
@@ -23,10 +23,10 @@
               :value="m"
             />
           </el-select>
-          <span v-else style="color: #909399">N/A</span>
+          <span v-else style="color: #909399">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="Fallback" width="210">
+      <el-table-column label="备选" width="210">
         <template #default="{ row }">
           <el-select
             v-if="row.hasFallback"
@@ -34,7 +34,7 @@
             size="small"
             style="width: 190px"
             clearable
-            placeholder="None"
+            placeholder="无"
             @change="(val: string) => handleSave(row.key, 'fallback', val || '')"
           >
             <el-option
@@ -44,23 +44,23 @@
               :value="m"
             />
           </el-select>
-          <span v-else style="color: #909399">N/A</span>
+          <span v-else style="color: #909399">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="Features" min-width="180">
+      <el-table-column label="功能" min-width="180">
         <template #default="{ row }">
           <template v-if="row.key === 'receiver'">
             <el-switch
               :model-value="cfg.receiver?.vision_enabled"
               size="small"
-              active-text="Vision"
+              active-text="视觉"
               style="margin-right: 8px"
               @change="(val: boolean) => handleSave('receiver', 'vision_enabled', val)"
             />
             <el-switch
               :model-value="cfg.receiver?.audio_enabled"
               size="small"
-              active-text="Audio"
+              active-text="语音"
               @change="(val: boolean) => handleSave('receiver', 'audio_enabled', val)"
             />
           </template>
@@ -68,7 +68,7 @@
             <el-switch
               :model-value="cfg.sender?.tts_enabled"
               size="small"
-              active-text="TTS"
+              active-text="语音合成"
               @change="(val: boolean) => handleSave('sender', 'tts_enabled', val)"
             />
           </template>

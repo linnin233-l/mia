@@ -1,33 +1,33 @@
 <template>
   <div style="padding: 20px">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px">
-      <h2 style="margin: 0">Memory ({{ memStore.total }} entries)</h2>
-      <el-button type="warning" @click="handleCompact" :loading="compacting">Compact</el-button>
+      <h2 style="margin: 0">记忆 ({{ memStore.total }} 条)</h2>
+      <el-button type="warning" @click="handle压缩" :loading="compacting">压缩</el-button>
     </div>
 
-    <el-table :data="memStore.entries" v-loading="memStore.loading" stripe>
+    <el-table :data="memStore.条" v-loading="memStore.loading" stripe>
       <el-table-column type="expand">
         <template #default="{ row }">
           <div style="padding: 12px">
-            <p><strong>Content:</strong> {{ row.content }}</p>
-            <p><strong>Confidence:</strong> {{ (row.confidence * 100).toFixed(0) }}%</p>
-            <p><strong>Keywords:</strong> {{ row.keywords?.join(', ') }}</p>
-            <p><strong>Source Sessions:</strong> {{ row.source_sessions?.join(', ') }}</p>
+            <p><strong>内容:</strong> {{ row.content }}</p>
+            <p><strong>置信度:</strong> {{ (row.confidence * 100).toFixed(0) }}%</p>
+            <p><strong>关键词:</strong> {{ row.keywords?.join(', ') }}</p>
+            <p><strong>来源 会话:</strong> {{ row.source_sessions?.join(', ') }}</p>
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="content" label="Content" min-width="300" show-overflow-tooltip />
-      <el-table-column label="Category" width="110">
+      <el-table-column prop="content" label="内容" min-width="300" show-overflow-tooltip />
+      <el-table-column label="分类" width="110">
         <template #default="{ row }">
           <el-tag size="small">{{ row.category }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="Confidence" width="110">
+      <el-table-column label="置信度" width="110">
         <template #default="{ row }">
           <el-progress :percentage="Math.round(row.confidence * 100)" :stroke-width="8" />
         </template>
       </el-table-column>
-      <el-table-column prop="created_at" label="Date" width="180">
+      <el-table-column prop="created_at" label="日期" width="180">
         <template #default="{ row }">{{ row.created_at?.slice(0, 16) }}</template>
       </el-table-column>
     </el-table>
@@ -55,7 +55,7 @@ onMounted(() => memStore.fetchEntries(1))
 
 function onExpand(row: any, rows: any[]) {}
 
-async function handleCompact() {
+async function handle压缩() {
   compacting.value = true
   try {
     await memStore.compact()

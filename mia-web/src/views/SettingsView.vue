@@ -7,7 +7,7 @@
       <el-tab-pane label="Agents" name="agents">
         <AgentPanel :config="config" />
       </el-tab-pane>
-      <el-tab-pane label="Channels" name="channels">
+      <el-tab-pane label="渠道" name="channels">
         <ChannelPanel />
       </el-tab-pane>
     </el-tabs>

@@ -10,6 +10,6 @@ describe('ModelPanel', () => {
 
   it('displays title', () => {
     const wrapper = mount(ModelPanel)
-    expect(wrapper.text()).toContain('Model Registry')
+    expect(wrapper.text()).toContain('模型注册表')
   })
 })

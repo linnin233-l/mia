@@ -1,10 +1,10 @@
 <template>
   <el-container style="height: 100vh">
     <el-header height="56px" style="background: #1a1a2e; color: #eee; display: flex; align-items: center; padding: 0 20px">
-      <span style="font-size: 18px; font-weight: bold; margin-right: 30px">MIA Web</span>
+      <span style="font-size: 18px; font-weight: bold; margin-right: 30px">MIA 控制台</span>
       <el-select
         v-model="selectedSession"
-        placeholder="Select session"
+        placeholder="选择会话"
         size="small"
         style="width: 220px"
         @change="switchSession"
@@ -23,10 +23,10 @@
         router
         style="background: transparent; border: none; --el-menu-text-color: #ccc; --el-menu-hover-text-color: #fff; --el-menu-active-color: #409EFF"
       >
-        <el-menu-item index="/chat">Chat</el-menu-item>
-        <el-menu-item index="/sessions">Sessions</el-menu-item>
-        <el-menu-item index="/memory">Memory</el-menu-item>
-        <el-menu-item index="/settings">Settings</el-menu-item>
+        <el-menu-item index="/chat">聊天</el-menu-item>
+        <el-menu-item index="/sessions">会话</el-menu-item>
+        <el-menu-item index="/memory">记忆</el-menu-item>
+        <el-menu-item index="/settings">设置</el-menu-item>
       </el-menu>
     </el-header>
     <el-container>
