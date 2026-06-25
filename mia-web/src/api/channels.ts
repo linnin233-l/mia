@@ -1,6 +1,16 @@
 import client from './client'
 import type { ChannelsResponse } from '@/types'
 
+export interface InterfaceDetail {
+  name: string
+  has_token: boolean
+  enabled: boolean
+  token_file: string
+  token_masked: string
+  file_size: number
+  file_mtime: string
+}
+
 export async function getChannelStatus(): Promise<ChannelsResponse> {
   const { data } = await client.get('/channels')
   return data
@@ -8,4 +18,9 @@ export async function getChannelStatus(): Promise<ChannelsResponse> {
 
 export async function toggleChannel(name: string, enabled: boolean): Promise<void> {
   await client.put(`/channels/${name}`, { enabled })
+}
+
+export async function getInterfaceDetail(name: string): Promise<InterfaceDetail> {
+  const { data } = await client.get(`/interface/${name}`)
+  return data
 }

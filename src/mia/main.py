@@ -20,6 +20,7 @@ import asyncio
 import json
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -1160,15 +1161,38 @@ async def run_server(port: int) -> None:
 
     @app.get("/api/interface/{name}")
     async def interface_status(name: str):
+        empty = {"name": name, "has_token": False, "enabled": False, "token_file": "", "token_masked": "", "file_size": 0, "file_mtime": ""}
         if name == "wechat":
             token_file = Path.home() / ".mia" / "wechat_bot_token"
-            has_token = token_file.exists() or bool(config.wechat.bot_token)
-            return {"name": "wechat", "has_token": has_token, "enabled": rt.wechat_enabled}
+            enabled = rt.wechat_enabled
+            cfg_token = config.wechat.bot_token
         elif name == "telegram":
             token_file = Path.home() / ".mia" / "telegram_bot_token"
-            has_token = token_file.exists() or bool(config.telegram.bot_token)
-            return {"name": "telegram", "has_token": has_token, "enabled": rt.telegram_enabled}
-        return JSONResponse(status_code=404, content={"error": f"未知接口: {name}"})
+            enabled = rt.telegram_enabled
+            cfg_token = config.telegram.bot_token
+        else:
+            return JSONResponse(status_code=404, content={"error": f"未知接口: {name}"})
+
+        has_token = token_file.exists() or bool(cfg_token)
+        result = {"name": name, "has_token": has_token, "enabled": enabled, "token_file": str(token_file)}
+        # Token 掩码（只显示前4后4）
+        token_raw = ""
+        if token_file.exists():
+            try:
+                token_raw = token_file.read_text(encoding="utf-8").strip()
+                stat = token_file.stat()
+                result["file_size"] = stat.st_size
+                result["file_mtime"] = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+        if not token_raw and cfg_token:
+            token_raw = cfg_token
+        if token_raw:
+            if len(token_raw) > 8:
+                result["token_masked"] = token_raw[:4] + "****" + token_raw[-4:]
+            else:
+                result["token_masked"] = "*" * len(token_raw)
+        return result
 
     # ─── 对话 ────────────────────────────────────────
 
