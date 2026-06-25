@@ -155,7 +155,13 @@ async function startQrLogin() {
     const { data } = await client.post('/interface/wechat/qrcode')
     qrCode.value = data.qrcode
     if (data.image) {
-      qrImage.value = data.image.startsWith('data:') ? data.image : 'data:image/png;base64,' + data.image
+      if (data.image.startsWith('data:')) {
+        qrImage.value = data.image
+      } else if (data.image.startsWith('http')) {
+        qrImage.value = data.image
+      } else {
+        qrImage.value = 'data:image/png;base64,' + data.image
+      }
     }
     qrStatus.value = 'waiting'
     startQrPolling()
