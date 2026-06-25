@@ -1,83 +1,95 @@
 <template>
   <div>
     <h3>Agent Model Assignments</h3>
-    <div v-if="loading" style="color: #909399; padding: 20px">Loading...</div>
-    <div v-else>
-      <el-table :data="agents" stripe>
-        <el-table-column prop="key" label="Agent" width="130" />
-        <el-table-column label="Primary Model" width="200">
-          <template #default="{ row }">
-            <el-select
-              v-if="row.hasModel"
-              :model-value="row.model"
+    <p style="font-size: 12px; color: #909399; margin: 0 0 12px">Loaded from RuntimeConfig at startup. Changes save immediately.</p>
+    <div v-if="loading" style="color: #909399; padding: 20px">Loading config...</div>
+    <el-table v-else :data="agentRows" stripe>
+      <el-table-column label="Agent" width="130">
+        <template #default="{ row }">{{ row.label }}</template>
+      </el-table-column>
+      <el-table-column label="Primary Model" width="210">
+        <template #default="{ row }">
+          <el-select
+            v-if="row.hasModel"
+            :model-value="getModel(row.key)"
+            size="small"
+            style="width: 190px"
+            @change="(val: string) => handleSave(row.key, 'model', val)"
+          >
+            <el-option
+              v-for="m in getModelOptions(row.key)"
+              :key="m"
+              :label="m"
+              :value="m"
+            />
+          </el-select>
+          <span v-else style="color: #909399">N/A</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="Fallback" width="210">
+        <template #default="{ row }">
+          <el-select
+            v-if="row.hasFallback"
+            :model-value="getFallback(row.key)"
+            size="small"
+            style="width: 190px"
+            clearable
+            placeholder="None"
+            @change="(val: string) => handleSave(row.key, 'fallback', val || '')"
+          >
+            <el-option
+              v-for="m in getModelOptions(row.key)"
+              :key="m"
+              :label="m"
+              :value="m"
+            />
+          </el-select>
+          <span v-else style="color: #909399">N/A</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="Features" min-width="180">
+        <template #default="{ row }">
+          <template v-if="row.key === 'receiver'">
+            <el-switch
+              :model-value="cfg.receiver?.vision_enabled"
               size="small"
-              style="width: 180px"
-              @change="(val: string) => handleSave(row.key, { model: val })"
-            >
-              <el-option v-for="m in textModels" :key="m" :label="m" :value="m" />
-            </el-select>
-            <span v-else style="color: #909399">{{ row.model || '-' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="Fallback" width="200">
-          <template #default="{ row }">
-            <el-select
-              v-if="row.hasFallback"
-              :model-value="row.fallback"
+              active-text="Vision"
+              style="margin-right: 8px"
+              @change="(val: boolean) => handleSave('receiver', 'vision_enabled', val)"
+            />
+            <el-switch
+              :model-value="cfg.receiver?.audio_enabled"
               size="small"
-              style="width: 180px"
-              clearable
-              @change="(val: string) => handleSave(row.key, { fallback: val || '' })"
-            >
-              <el-option v-for="m in textModels" :key="m" :label="m" :value="m" />
-            </el-select>
-            <span v-else style="color: #909399">-</span>
+              active-text="Audio"
+              @change="(val: boolean) => handleSave('receiver', 'audio_enabled', val)"
+            />
           </template>
-        </el-table-column>
-        <el-table-column label="Features" min-width="200">
-          <template #default="{ row }">
-            <template v-if="row.key === 'receiver'">
-              <el-switch
-                :model-value="cfg.receiver?.vision_enabled"
-                size="small"
-                active-text="Vision"
-                style="margin-right: 8px"
-                @change="(val: boolean) => handleSave('receiver', { vision_enabled: val })"
-              />
-              <el-switch
-                :model-value="cfg.receiver?.audio_enabled"
-                size="small"
-                active-text="Audio"
-                @change="(val: boolean) => handleSave('receiver', { audio_enabled: val })"
-              />
-            </template>
-            <template v-else-if="row.key === 'sender'">
-              <el-switch
-                :model-value="cfg.sender?.tts_enabled"
-                size="small"
-                active-text="TTS"
-                @change="(val: boolean) => handleSave('sender', { tts_enabled: val })"
-              />
-            </template>
-            <span v-else style="color: #909399; font-size: 12px">-</span>
+          <template v-else-if="row.key === 'sender'">
+            <el-switch
+              :model-value="cfg.sender?.tts_enabled"
+              size="small"
+              active-text="TTS"
+              @change="(val: boolean) => handleSave('sender', 'tts_enabled', val)"
+            />
           </template>
-        </el-table-column>
-      </el-table>
-    </div>
+          <span v-else style="color: #909399; font-size: 12px">-</span>
+        </template>
+      </el-table-column>
+    </el-table>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { getModels, updateAgentConfig } from '@/api/config'
 import client from '@/api/client'
 
 const loading = ref(true)
 const cfg = ref<any>({})
+const allModels = ref<any[]>([])
 const textModels = ref<string[]>([])
-const saving = ref<Record<string, boolean>>({})
 
-const agents = [
+const agentRows = [
   { key: 'scheduler', label: 'Scheduler', hasModel: true, hasFallback: true },
   { key: 'task', label: 'TaskAgent', hasModel: true, hasFallback: true },
   { key: 'memory', label: 'MemoryAgent', hasModel: true, hasFallback: true },
@@ -92,7 +104,7 @@ onMounted(async () => {
       getModels(),
     ])
     cfg.value = configRes.data
-    // 只取已启用的文字模型作为可选项
+    allModels.value = modelsRes.models
     textModels.value = modelsRes.models
       .filter((m: any) => m.enabled && m.capabilities.includes('text_chat'))
       .map((m: any) => m.id)
@@ -100,17 +112,53 @@ onMounted(async () => {
   loading.value = false
 })
 
-async function handleSave(agentKey: string, config: Record<string, any>) {
-  saving.value[agentKey] = true
+// Model getters from current RuntimeConfig
+const keyMap: Record<string, string> = {
+  scheduler: 'scheduler', task: 'task', memory: 'memory',
+}
+
+function getModel(key: string): string {
+  if (key in keyMap) return cfg.value[keyMap[key]]?.model || ''
+  if (key === 'receiver') return cfg.value.receiver?.text_model || ''
+  if (key === 'sender') return cfg.value.sender?.tts_model || ''
+  return ''
+}
+
+function getFallback(key: string): string {
+  if (key in keyMap) return cfg.value[keyMap[key]]?.fallback || ''
+  return ''
+}
+
+// Dropdown options: always include currently configured model + available text models
+function getModelOptions(key: string): string[] {
+  const current = getModel(key)
+  const fb = getFallback(key)
+  const opts = new Set(textModels.value)
+  if (current) opts.add(current)
+  if (fb) opts.add(fb)
+  return Array.from(opts).sort()
+}
+
+async function handleSave(agentKey: string, field: string, value: any) {
+  const body: Record<string, any> = {}
+  if (field === 'model') body.model = value
+  else if (field === 'fallback') body.fallback = value
+  else body[field] = value
+
   try {
-    await updateAgentConfig(agentKey, config)
-    // 更新本地显示
-    if (config.model && cfg.value[agentKey]) cfg.value[agentKey].model = config.model
-    if (config.fallback !== undefined && cfg.value[agentKey]) cfg.value[agentKey].fallback = config.fallback
-    if (config.vision_enabled !== undefined && cfg.value.receiver) cfg.value.receiver.vision_enabled = config.vision_enabled
-    if (config.audio_enabled !== undefined && cfg.value.receiver) cfg.value.receiver.audio_enabled = config.audio_enabled
-    if (config.tts_enabled !== undefined && cfg.value.sender) cfg.value.sender.tts_enabled = config.tts_enabled
+    await updateAgentConfig(agentKey, body)
+    // Update local cfg immediately so UI reflects change
+    const agentCfgKey = keyMap[agentKey] || agentKey
+    if (field === 'model') {
+      if (agentKey === 'sender') cfg.value.sender.tts_model = value
+      else if (agentKey === 'receiver') cfg.value.receiver.text_model = value
+      else if (cfg.value[agentCfgKey]) cfg.value[agentCfgKey].model = value
+    } else if (field === 'fallback') {
+      if (cfg.value[agentCfgKey]) cfg.value[agentCfgKey].fallback = value
+    } else {
+      if (agentKey === 'receiver' && cfg.value.receiver) (cfg.value.receiver as any)[field] = value
+      if (agentKey === 'sender' && cfg.value.sender) (cfg.value.sender as any)[field] = value
+    }
   } catch {}
-  saving.value[agentKey] = false
 }
 </script>
