@@ -1163,27 +1163,61 @@ async def run_server(port: int) -> None:
 
     @app.put("/api/agents/{agent_name}")
     async def update_agent_config(agent_name: str, data: dict):
+        from mia.model_registry import validate_assignment, Capability, MODEL_REGISTRY
         model = data.get("model")
         fallback = data.get("fallback")
+
+        # 能力校验规则
+        def _check(model_id, caps):
+            if model_id:
+                validate_assignment(model_id, caps)
+
         if agent_name == "scheduler":
+            _check(model, {Capability.TEXT_CHAT})
+            _check(fallback, {Capability.TEXT_CHAT})
             if model: rt.scheduler_model = model
             if fallback: rt.scheduler_fallback = fallback
         elif agent_name == "task":
+            _check(model, {Capability.TEXT_CHAT})
+            _check(fallback, {Capability.TEXT_CHAT})
             if model: rt.task_model = model
             if fallback: rt.task_fallback = fallback
         elif agent_name == "memory":
+            _check(model, {Capability.TEXT_CHAT})
+            _check(fallback, {Capability.TEXT_CHAT})
             if model: rt.memory_model = model
             if fallback: rt.memory_fallback = fallback
         elif agent_name == "receiver":
+            _check(model, {Capability.TEXT_CHAT})
             if model: rt.receiver_text_model = model
-            if "vision_enabled" in data: rt.receiver_vision_enabled = data["vision_enabled"]
-            if "audio_enabled" in data: rt.receiver_audio_enabled = data["audio_enabled"]
+            if "vision_enabled" in data:
+                if data["vision_enabled"]:
+                    _check(rt.receiver_vision_model, {Capability.VISION})
+                rt.receiver_vision_enabled = data["vision_enabled"]
+            if "audio_enabled" in data:
+                if data["audio_enabled"]:
+                    _check(rt.receiver_audio_model, {Capability.AUDIO_UNDERSTANDING})
+                rt.receiver_audio_enabled = data["audio_enabled"]
         elif agent_name == "sender":
+            _check(model, {Capability.TTS})
             if model: rt.sender_tts_model = model
-            if "tts_enabled" in data: rt.sender_tts_enabled = data["tts_enabled"]
+            if "tts_enabled" in data:
+                if data["tts_enabled"]:
+                    _check(rt.sender_tts_model, {Capability.TTS})
+                rt.sender_tts_enabled = data["tts_enabled"]
         else:
             return JSONResponse(status_code=400, content={"error": f"未知 Agent: {agent_name}"})
         return {"ok": True, "agent": agent_name}
+
+    @app.get("/api/agents/capabilities")
+    async def agent_capabilities():
+        return {
+            "scheduler": {"role": "Scheduler", "primary": {"required": ["text_chat"]}, "fallback": {"required": ["text_chat"]}},
+            "task": {"role": "TaskAgent", "primary": {"required": ["text_chat"]}, "fallback": {"required": ["text_chat"]}},
+            "memory": {"role": "MemoryAgent", "primary": {"required": ["text_chat"]}, "fallback": {"required": ["text_chat"]}},
+            "receiver": {"role": "Receiver", "primary": {"required": ["text_chat"]}, "vision": {"required": ["vision"], "controlled_by": "vision_enabled"}, "audio": {"required": ["audio_understanding"], "controlled_by": "audio_enabled"}},
+            "sender": {"role": "Sender", "primary": {"required": ["tts"]}, "tts": {"required": ["tts"], "controlled_by": "tts_enabled"}},
+        }
 
     # ─── 记忆管理 ────────────────────────────────────
 

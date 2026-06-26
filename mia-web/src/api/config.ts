@@ -12,3 +12,8 @@ export async function toggleModel(modelId: string, enabled: boolean): Promise<vo
 export async function updateAgentConfig(agentName: string, config: Record<string, any>): Promise<void> {
   await client.put(`/agents/${agentName}`, config)
 }
+
+export async function getAgentCapabilities(): Promise<Record<string, any>> {
+  const { data } = await client.get('/agents/capabilities')
+  return data
+}
