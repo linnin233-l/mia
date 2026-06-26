@@ -2,10 +2,10 @@
   <div style="padding: 20px">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px">
       <h2 style="margin: 0">记忆 ({{ memStore.total }} 条)</h2>
-      <el-button type="warning" @click="handle压缩" :loading="compacting">压缩</el-button>
+      <el-button type="warning" @click="handleCompact" :loading="compacting">压缩</el-button>
     </div>
 
-    <el-table :data="memStore.条" v-loading="memStore.loading" stripe>
+    <el-table :data="memStore.entries" v-loading="memStore.loading" stripe>
       <el-table-column type="expand">
         <template #default="{ row }">
           <div style="padding: 12px">
@@ -55,7 +55,7 @@ onMounted(() => memStore.fetchEntries(1))
 
 function onExpand(row: any, rows: any[]) {}
 
-async function handle压缩() {
+async function handleCompact() {
   compacting.value = true
   try {
     await memStore.compact()
