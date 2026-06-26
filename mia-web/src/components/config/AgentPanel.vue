@@ -1,219 +1,194 @@
 <template>
   <div>
     <h3>Agent 模型分配</h3>
-    <p style="font-size: 12px; color: #909399; margin: 0 0 12px">从 RuntimeConfig 加载，修改即时生效。下拉框仅显示具备所需能力的模型。</p>
+    <p style="font-size: 12px; color: #909399; margin: 0 0 12px">
+      下拉框根据所需能力过滤。功能关闭时能力要求放宽。
+    </p>
     <div v-if="loading" style="color: #909399; padding: 20px">加载配置中...</div>
-    <el-table v-else :data="agentRows" stripe>
-      <el-table-column label="Agent" width="130">
-        <template #default="{ row }">{{ row.label }}</template>
-      </el-table-column>
-      <el-table-column label="主模型" width="230">
-        <template #default="{ row }">
-          <div v-if="row.hasModel">
-            <el-select
-              :model-value="getModel(row.key)"
-              size="small"
-              style="width: 190px"
-              @change="(val: string) => handleSave(row.key, 'model', val)"
-            >
-              <el-option
-                v-for="m in getModelOptions(row.key)"
-                :key="m.id"
-                :label="m.label"
-                :value="m.id"
-                :disabled="m.conflict"
-              />
-            </el-select>
-            <div v-if="modelConflict(row.key)" style="color: #f56c6c; font-size: 11px; margin-top: 2px">
-              冲突: {{ modelConflict(row.key) }}
+    <div v-else style="display: flex; flex-direction: column; gap: 16px">
+
+      <!-- Scheduler / TaskAgent / MemoryAgent -->
+      <el-card v-for="row in textAgents" :key="row.key" shadow="never">
+        <template #header>
+          <span style="font-weight: 500">{{ row.label }}</span>
+          <span style="font-size: 12px; color: #909399; margin-left: 8px">需要: text_chat</span>
+        </template>
+        <div style="display: flex; gap: 24px; align-items: center; flex-wrap: wrap">
+          <div>
+            <span style="font-size: 13px; color: #606266; margin-right: 8px">主模型</span>
+            <ModelSelect :model-value="getTextModel(row.key)" :models="textModels" required-caps="text_chat"
+              @change="(v: string) => handleSave(row.key, 'model', v)" />
+          </div>
+          <div>
+            <span style="font-size: 13px; color: #606266; margin-right: 8px">备选</span>
+            <ModelSelect :model-value="getTextFallback(row.key)" :models="textModels" required-caps="text_chat"
+              clearable @change="(v: string) => handleSave(row.key, 'fallback', v || '')" />
+          </div>
+        </div>
+      </el-card>
+
+      <!-- Receiver -->
+      <el-card shadow="never">
+        <template #header>
+          <span style="font-weight: 500">Receiver</span>
+          <span style="font-size: 12px; color: #909399; margin-left: 8px">需要: text_chat (文本), vision (视觉), audio_understanding (语音)</span>
+        </template>
+        <div style="display: flex; flex-direction: column; gap: 12px">
+          <div style="display: flex; gap: 24px; align-items: center; flex-wrap: wrap">
+            <div>
+              <span style="font-size: 13px; color: #606266; margin-right: 8px">文本模型</span>
+              <ModelSelect :model-value="cfg.receiver?.text_model || ''" :models="textModels" required-caps="text_chat"
+                @change="(v: string) => handleSave('receiver', 'model', v)" />
+            </div>
+            <div style="display: flex; gap: 12px; align-items: center">
+              <el-switch :model-value="cfg.receiver?.vision_enabled" size="small" active-text="视觉"
+                @change="(v: boolean) => handleSave('receiver', 'vision_enabled', v)" />
+              <div v-if="cfg.receiver?.vision_enabled">
+                <ModelSelect :model-value="cfg.receiver?.vision_model || cfg.receiver?.text_model || ''"
+                  :models="visionModels" required-caps="vision" @change="(v: string) => handleSave('receiver', 'vision_model', v)" />
+              </div>
+            </div>
+            <div style="display: flex; gap: 12px; align-items: center">
+              <el-switch :model-value="cfg.receiver?.audio_enabled" size="small" active-text="语音"
+                @change="(v: boolean) => handleSave('receiver', 'audio_enabled', v)" />
+              <div v-if="cfg.receiver?.audio_enabled">
+                <ModelSelect :model-value="cfg.receiver?.audio_model || cfg.receiver?.text_model || ''"
+                  :models="audioModels" required-caps="audio_understanding"
+                  @change="(v: string) => handleSave('receiver', 'audio_model', v)" />
+              </div>
             </div>
           </div>
-          <span v-else style="color: #909399">-</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="备选" width="230">
-        <template #default="{ row }">
-          <div v-if="row.hasFallback">
-            <el-select
-              :model-value="getFallback(row.key)"
-              size="small"
-              style="width: 190px"
-              clearable
-              placeholder="无"
-              @change="(val: string) => handleSave(row.key, 'fallback', val || '')"
-            >
-              <el-option
-                v-for="m in getModelOptions(row.key)"
-                :key="m.id"
-                :label="m.label"
-                :value="m.id"
-                :disabled="m.conflict"
-              />
-            </el-select>
+          <div v-if="receiverConflict" style="color: #f56c6c; font-size: 12px">
+            冲突: {{ receiverConflict }}
           </div>
-          <span v-else style="color: #909399">-</span>
+        </div>
+      </el-card>
+
+      <!-- Sender -->
+      <el-card shadow="never">
+        <template #header>
+          <span style="font-weight: 500">Sender</span>
+          <span style="font-size: 12px; color: #909399; margin-left: 8px">
+            {{ cfg.sender?.tts_enabled ? '需要: tts' : '需要: text_chat (语音合成已关闭)' }}
+          </span>
         </template>
-      </el-table-column>
-      <el-table-column label="功能" min-width="200">
-        <template #default="{ row }">
-          <template v-if="row.key === 'receiver'">
-            <div style="display: flex; flex-direction: column; gap: 4px">
-              <el-switch
-                :model-value="cfg.receiver?.vision_enabled"
-                size="small"
-                active-text="视觉"
-                @change="(val: boolean) => handleSave('receiver', 'vision_enabled', val)"
-              />
-              <el-switch
-                :model-value="cfg.receiver?.audio_enabled"
-                size="small"
-                active-text="语音"
-                @change="(val: boolean) => handleSave('receiver', 'audio_enabled', val)"
-              />
-            </div>
-          </template>
-          <template v-else-if="row.key === 'sender'">
-            <el-switch
-              :model-value="cfg.sender?.tts_enabled"
-              size="small"
-              active-text="语音合成"
-              @change="(val: boolean) => handleSave('sender', 'tts_enabled', val)"
-            />
-          </template>
-          <span v-else style="color: #909399; font-size: 12px">-</span>
-        </template>
-      </el-table-column>
-    </el-table>
+        <div style="display: flex; gap: 24px; align-items: center; flex-wrap: wrap">
+          <div style="display: flex; gap: 12px; align-items: center">
+            <el-switch :model-value="cfg.sender?.tts_enabled" size="small" active-text="语音合成"
+              @change="(v: boolean) => handleSave('sender', 'tts_enabled', v)" />
+          </div>
+          <div>
+            <span style="font-size: 13px; color: #606266; margin-right: 8px">TTS 模型</span>
+            <ModelSelect
+              :model-value="cfg.sender?.tts_model || ''"
+              :models="cfg.sender?.tts_enabled ? ttsModels : textModels"
+              :required-caps="cfg.sender?.tts_enabled ? 'tts' : 'text_chat'"
+              @change="(v: string) => handleSave('sender', 'model', v)" />
+          </div>
+          <div v-if="senderConflict" style="color: #f56c6c; font-size: 12px">
+            冲突: {{ senderConflict }}
+          </div>
+        </div>
+      </el-card>
+
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { getModels, updateAgentConfig, getAgentCapabilities } from '@/api/config'
+import { getModels, updateAgentConfig } from '@/api/config'
 import client from '@/api/client'
+import ModelSelect from './ModelSelect.vue'
 
 const loading = ref(true)
 const cfg = ref<any>({})
 const allModels = ref<any[]>([])
-const capabilities = ref<Record<string, any>>({})
 
-const keyMap: Record<string, string> = { scheduler: 'scheduler', task: 'task', memory: 'memory' }
-
-const agentRows = [
-  { key: 'scheduler', label: 'Scheduler', hasModel: true, hasFallback: true },
-  { key: 'task', label: 'TaskAgent', hasModel: true, hasFallback: true },
-  { key: 'memory', label: 'MemoryAgent', hasModel: true, hasFallback: true },
-  { key: 'receiver', label: 'Receiver', hasModel: true, hasFallback: false },
-  { key: 'sender', label: 'Sender', hasModel: true, hasFallback: false },
+const textAgents = [
+  { key: 'scheduler', label: 'Scheduler' },
+  { key: 'task', label: 'TaskAgent' },
+  { key: 'memory', label: 'MemoryAgent' },
 ]
 
-// Agent 角色 → 能力要求
-const agentCaps: Record<string, { primary: string[] }> = {
-  scheduler: { primary: ['text_chat'] },
-  task: { primary: ['text_chat'] },
-  memory: { primary: ['text_chat'] },
-  receiver: { primary: ['text_chat'] },
-  sender: { primary: ['tts'] },
+// 按能力分类的模型列表
+const textModels = computed(() => allModels.value.filter((m: any) => m.enabled && m.capabilities.includes('text_chat')).map((m: any) => m.id))
+const visionModels = computed(() => allModels.value.filter((m: any) => m.enabled && m.capabilities.includes('vision')).map((m: any) => m.id))
+const audioModels = computed(() => allModels.value.filter((m: any) => m.enabled && m.capabilities.includes('audio_understanding')).map((m: any) => m.id))
+const ttsModels = computed(() => allModels.value.filter((m: any) => m.enabled && m.capabilities.includes('tts')).map((m: any) => m.id))
+
+function getTextModel(key: string): string {
+  const map: Record<string, string> = { scheduler: 'scheduler', task: 'task', memory: 'memory' }
+  return cfg.value[map[key]]?.model || ''
 }
+function getTextFallback(key: string): string {
+  const map: Record<string, string> = { scheduler: 'scheduler', task: 'task', memory: 'memory' }
+  return cfg.value[map[key]]?.fallback || ''
+}
+
+// 冲突检测
+const receiverConflict = computed(() => {
+  const c = cfg.value.receiver
+  if (!c) return ''
+  const msgs: string[] = []
+  if (c.vision_enabled) {
+    const m = allModels.value.find((x: any) => x.id === (c.vision_model || c.text_model))
+    if (m && !m.capabilities.includes('vision')) msgs.push('视觉模型缺少 vision 能力')
+  }
+  if (c.audio_enabled) {
+    const m = allModels.value.find((x: any) => x.id === (c.audio_model || c.text_model))
+    if (m && !m.capabilities.includes('audio_understanding')) msgs.push('语音模型缺少 audio_understanding 能力')
+  }
+  return msgs.join('; ')
+})
+
+const senderConflict = computed(() => {
+  const c = cfg.value.sender
+  if (!c || !c.tts_enabled) return ''
+  const m = allModels.value.find((x: any) => x.id === c.tts_model)
+  if (m && !m.capabilities.includes('tts')) return 'TTS 模型缺少 tts 能力'
+  return ''
+})
 
 onMounted(async () => {
   try {
-    const [configRes, modelsRes, capsRes] = await Promise.all([
+    const [configRes, modelsRes] = await Promise.all([
       client.get('/config'),
       getModels(),
-      getAgentCapabilities(),
     ])
     cfg.value = configRes.data
     allModels.value = modelsRes.models
-    capabilities.value = capsRes
-  } catch {}
+  } catch { }
   loading.value = false
 })
 
-function getModel(key: string): string {
-  if (key in keyMap) return cfg.value[keyMap[key]]?.model || ''
-  if (key === 'receiver') return cfg.value.receiver?.text_model || ''
-  if (key === 'sender') return cfg.value.sender?.tts_model || ''
-  return ''
-}
-
-function getFallback(key: string): string {
-  if (key in keyMap) return cfg.value[keyMap[key]]?.fallback || ''
-  return ''
-}
-
-// 模型是否具备指定能力集合
-function hasCaps(modelId: string, required: string[]): boolean {
-  const m = allModels.value.find((x: any) => x.id === modelId)
-  if (!m) return false
-  return required.every((c: string) => m.capabilities.includes(c))
-}
-
-// 获取当前角色的能力要求
-function getRequiredCaps(key: string): string[] {
-  return agentCaps[key]?.primary || ['text_chat']
-}
-
-// 下拉框选项：只显示具备所需能力的模型
-function getModelOptions(key: string): { id: string; label: string; conflict: boolean }[] {
-  const required = getRequiredCaps(key)
-  const current = getModel(key)
-  const fb = getFallback(key)
-
-  return allModels.value
-    .filter((m: any) => m.enabled)
-    .map((m: any) => {
-      const ok = required.every((c: string) => m.capabilities.includes(c))
-      return { id: m.id, label: m.id, conflict: !ok }
-    })
-}
-
-// 当前模型是否与能力要求冲突
-function modelConflict(key: string): string {
-  const model = getModel(key)
-  if (!model) return ''
-  const required = getRequiredCaps(key)
-  const m = allModels.value.find((x: any) => x.id === model)
-  if (!m) return ''
-  const missing = required.filter((c: string) => !m.capabilities.includes(c))
-  if (missing.length === 0) return ''
-  return `模型缺少: ${missing.join(', ')}`
-}
-
 async function handleSave(agentKey: string, field: string, value: any) {
-  // 前端预校验
-  if (field === 'model' && value) {
-    const required = getRequiredCaps(agentKey)
-    if (!hasCaps(value, required)) {
-      return // 不发送请求
-    }
-  }
-
   const body: Record<string, any> = {}
   if (field === 'model') body.model = value
   else if (field === 'fallback') body.fallback = value
+  else if (field === 'vision_model') body.vision_model = value
+  else if (field === 'audio_model') body.audio_model = value
   else body[field] = value
 
   try {
     await updateAgentConfig(agentKey, body)
-    const agentCfgKey = keyMap[agentKey] || agentKey
-    if (field === 'model') {
-      if (agentKey === 'sender') cfg.value.sender.tts_model = value
-      else if (agentKey === 'receiver') cfg.value.receiver.text_model = value
-      else if (cfg.value[agentCfgKey]) cfg.value[agentCfgKey].model = value
-    } else if (field === 'fallback') {
-      if (cfg.value[agentCfgKey]) cfg.value[agentCfgKey].fallback = value
+    // 更新本地
+    const c = cfg.value
+    if (agentKey === 'receiver') {
+      if (field === 'model') c.receiver.text_model = value
+      if (field === 'vision_model') c.receiver.vision_model = value
+      if (field === 'audio_model') c.receiver.audio_model = value
+      if (field === 'vision_enabled') c.receiver.vision_enabled = value
+      if (field === 'audio_enabled') c.receiver.audio_enabled = value
+    } else if (agentKey === 'sender') {
+      if (field === 'model') c.sender.tts_model = value
+      if (field === 'tts_enabled') c.sender.tts_enabled = value
     } else {
-      if (agentKey === 'receiver' && cfg.value.receiver) (cfg.value.receiver as any)[field] = value
-      if (agentKey === 'sender' && cfg.value.sender) (cfg.value.sender as any)[field] = value
+      if (field === 'model') c[agentKey].model = value
+      if (field === 'fallback') c[agentKey].fallback = value
     }
   } catch (e: any) {
-    // 后端校验失败
-    const errMsg = e?.response?.data?.error || ''
-    if (errMsg) {
-      // 用浏览器 alert 提示（简单直接）
-      alert(`配置冲突: ${errMsg}`)
-    }
+    alert(e?.response?.data?.error || '保存失败')
   }
 }
 </script>

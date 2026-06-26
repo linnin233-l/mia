@@ -1129,6 +1129,8 @@ async def run_server(port: int) -> None:
             "memory": {"model": rt.memory_model, "fallback": rt.memory_fallback},
             "receiver": {
                 "text_model": rt.receiver_text_model,
+                "vision_model": rt.receiver_vision_model,
+                "audio_model": rt.receiver_audio_model,
                 "vision_enabled": rt.receiver_vision_enabled,
                 "audio_enabled": rt.receiver_audio_enabled,
             },
@@ -1188,8 +1190,14 @@ async def run_server(port: int) -> None:
             if model: rt.memory_model = model
             if fallback: rt.memory_fallback = fallback
         elif agent_name == "receiver":
+            vision_model = data.get("vision_model")
+            audio_model = data.get("audio_model")
             _check(model, {Capability.TEXT_CHAT})
+            _check(vision_model, {Capability.VISION})
+            _check(audio_model, {Capability.AUDIO_UNDERSTANDING})
             if model: rt.receiver_text_model = model
+            if vision_model: rt.receiver_vision_model = vision_model
+            if audio_model: rt.receiver_audio_model = audio_model
             if "vision_enabled" in data:
                 if data["vision_enabled"]:
                     _check(rt.receiver_vision_model, {Capability.VISION})
