@@ -27,6 +27,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import httpx
+
 from mia.agents.base import BaseAgent
 from mia.bus.bus import MessageBus
 from mia.bus.message import Message, MessageType
@@ -427,22 +429,26 @@ class WeChatSenderAgent(BaseAgent):
         to_user_id: str,
         context_token: str,
         text: str,
-    ) -> None:
-        """发送文本到微信用户（底层 iLink API 调用）"""
+    ) -> bool:
+        """发送文本到微信用户（底层 iLink API 调用），返回是否成功"""
         if not self._client or not to_user_id or not text:
-            return
+            return False
         try:
             resp = await self._client.send_text(
                 to_user_id, text, context_token,
             )
             ret = resp.get("ret", -1) if isinstance(resp, dict) else -1
             if ret != 0:
-                logger.debug("[WeChatSender] send_text ret=%s", ret)
+                logger.warning("[WeChatSender] send_text ret=%s", ret)
+                return False
+            return True
+        except httpx.ConnectError:
+            logger.warning("[WeChatSender] iLink 连接失败 (网络不通)")
+            print(f"\033[33m[WeChatSender]\033[0m iLink API 不可达, 回复未发送")
+            return False
         except Exception:
-            logger.exception(
-                "[WeChatSender] 发送文本失败 to=%s",
-                to_user_id[:20],
-            )
+            logger.exception("[WeChatSender] 发送文本失败 to=%s", to_user_id[:20])
+            return False
 
     # ─── Token 持久化 ──────────────────────────────────
 
