@@ -997,6 +997,68 @@ async def run_server(port: int) -> None:
     session_manager = SessionManager()
     session_manager.load_index()
 
+    # ─── 持久化 Agent 管道（处理微信/Telegram 消息）────
+    bus = MessageBus(max_queue_size=100)
+    await bus.start()
+    _mirror_types = [MessageType.USER_INTENT, MessageType.SEND_TEXT, MessageType.STREAM_END,
+                     MessageType.EXECUTE_TASK, MessageType.TASK_RESULT, MessageType.TASK_ERROR,
+                     MessageType.CONVERSATION_DONE]
+    for mt in _mirror_types:
+        bus.subscribe_mirror(mt, "memory_agent")
+
+    mimo_key = rt.provider_api_keys.get("mimo", config.mimo.api_key)
+    deepseek_key = rt.provider_api_keys.get("deepseek", config.deepseek.api_key)
+    mimo = create_provider("mimo", mimo_key) if mimo_key else None
+    deepseek = create_provider("deepseek", deepseek_key) if deepseek_key else None
+
+    # 核心 Agent（持久化，处理渠道消息）
+    receiver = ReceiverAgent(bus=bus, mimo=mimo)
+    memory_agent = MemoryAgent(bus=bus, provider=mimo, model=rt.memory_model,
+        fallback_provider=deepseek if rt.memory_fallback else None,
+        fallback_model=rt.memory_fallback if rt.memory_fallback else None,
+        session_manager=session_manager)
+    scheduler = SchedulerAgent(bus=bus, provider=mimo, model=rt.scheduler_model,
+        fallback_provider=deepseek if rt.scheduler_fallback else None,
+        fallback_model=rt.scheduler_fallback if rt.scheduler_fallback else None,
+        enable_streaming=config.agent.enable_streaming)
+    sender = SenderAgent(bus=bus, mimo=mimo if rt.sender_tts_enabled else None,
+        output_dir=config.agent.workspace_dir)
+    task_agent = TaskAgent(bus=bus, provider=mimo, model=rt.task_model,
+        fallback_provider=deepseek if rt.task_fallback else None,
+        fallback_model=rt.task_fallback if rt.task_fallback else None)
+
+    server_agents = [receiver, memory_agent, scheduler, sender, task_agent]
+    for agent in server_agents:
+        await agent.start()
+
+    # 渠道 Receiver（长轮询，发布 RAW_INPUT）
+    if rt.wechat_enabled:
+        wechat_recv = WeChatReceiverAgent(bus=bus, bot_token=config.wechat.bot_token,
+            bot_token_file=config.wechat.bot_token_file, base_url=config.wechat.base_url,
+            enabled=True, media_dir=config.wechat.media_dir)
+        wechat_send = WeChatSenderAgent(bus=bus, bot_token=config.wechat.bot_token,
+            bot_token_file=config.wechat.bot_token_file, base_url=config.wechat.base_url,
+            enabled=True, mimo=mimo if rt.wechat_sender_tts_enabled else None,
+            workspace_dir=config.agent.workspace_dir)
+        server_agents.extend([wechat_recv, wechat_send])
+        await wechat_recv.start(); await wechat_send.start()
+    if rt.telegram_enabled:
+        tg_recv = TelegramReceiverAgent(bus=bus, bot_token=config.telegram.bot_token,
+            bot_token_file=config.telegram.bot_token_file, enabled=True)
+        tg_send = TelegramSenderAgent(bus=bus, bot_token=config.telegram.bot_token,
+            bot_token_file=config.telegram.bot_token_file, enabled=True,
+            mimo=mimo if rt.telegram_sender_tts_enabled else None,
+            workspace_dir=config.agent.workspace_dir)
+        server_agents.extend([tg_recv, tg_send])
+        await tg_recv.start(); await tg_send.start()
+
+    server_tasks = [asyncio.create_task(a.run()) for a in server_agents]
+    await asyncio.sleep(0.3)
+
+    # 打印渠道状态
+    if rt.wechat_enabled: print(f"  WeChat:    已启用 (iLink Bot)")
+    if rt.telegram_enabled: print(f"  Telegram:  已启用 (Bot API)")
+
     app = FastAPI(
         title="MIA — MiMo Intelligent Agent",
         version="0.1.0",
@@ -1456,7 +1518,15 @@ async def run_server(port: int) -> None:
         print(f"  Telegram:     已启用")
     config_uv = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="info")
     server = uvicorn.Server(config_uv)
-    await server.serve()
+    try:
+        await server.serve()
+    finally:
+        for agent in server_agents:
+            await agent.stop()
+        for t in server_tasks:
+            t.cancel()
+        await asyncio.gather(*server_tasks, return_exceptions=True)
+        await bus.stop()
 
 
 def main():
