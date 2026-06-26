@@ -93,8 +93,8 @@ const agentRows = [
   { key: 'scheduler', label: 'Scheduler', hasModel: true, hasFallback: true },
   { key: 'task', label: 'TaskAgent', hasModel: true, hasFallback: true },
   { key: 'memory', label: 'MemoryAgent', hasModel: true, hasFallback: true },
-  { key: 'receiver', label: 'Receiver', hasModel: false, hasFallback: false },
-  { key: 'sender', label: 'Sender', hasModel: false, hasFallback: false },
+  { key: 'receiver', label: 'Receiver', hasModel: true, hasFallback: false },
+  { key: 'sender', label: 'Sender', hasModel: true, hasFallback: false },
 ]
 
 onMounted(async () => {

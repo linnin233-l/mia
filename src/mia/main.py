@@ -1179,6 +1179,7 @@ async def run_server(port: int) -> None:
             if "vision_enabled" in data: rt.receiver_vision_enabled = data["vision_enabled"]
             if "audio_enabled" in data: rt.receiver_audio_enabled = data["audio_enabled"]
         elif agent_name == "sender":
+            if model: rt.sender_tts_model = model
             if "tts_enabled" in data: rt.sender_tts_enabled = data["tts_enabled"]
         else:
             return JSONResponse(status_code=400, content={"error": f"未知 Agent: {agent_name}"})
