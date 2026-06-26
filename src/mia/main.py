@@ -1193,11 +1193,16 @@ async def run_server(port: int) -> None:
             vision_model = data.get("vision_model")
             audio_model = data.get("audio_model")
             _check(model, {Capability.TEXT_CHAT})
-            _check(vision_model, {Capability.VISION})
-            _check(audio_model, {Capability.AUDIO_UNDERSTANDING})
             if model: rt.receiver_text_model = model
-            if vision_model: rt.receiver_vision_model = vision_model
-            if audio_model: rt.receiver_audio_model = audio_model
+            if vision_model:
+                # 只有视觉开启时才需要 VISION 能力
+                if rt.receiver_vision_enabled or data.get("vision_enabled", False):
+                    _check(vision_model, {Capability.VISION})
+                rt.receiver_vision_model = vision_model
+            if audio_model:
+                if rt.receiver_audio_enabled or data.get("audio_enabled", False):
+                    _check(audio_model, {Capability.AUDIO_UNDERSTANDING})
+                rt.receiver_audio_model = audio_model
             if "vision_enabled" in data:
                 if data["vision_enabled"]:
                     _check(rt.receiver_vision_model, {Capability.VISION})
@@ -1207,8 +1212,12 @@ async def run_server(port: int) -> None:
                     _check(rt.receiver_audio_model, {Capability.AUDIO_UNDERSTANDING})
                 rt.receiver_audio_enabled = data["audio_enabled"]
         elif agent_name == "sender":
-            _check(model, {Capability.TTS})
-            if model: rt.sender_tts_model = model
+            if model:
+                # 只有 TTS 开启时才需要 TTS 能力
+                will_be_enabled = data.get("tts_enabled", rt.sender_tts_enabled)
+                if will_be_enabled:
+                    _check(model, {Capability.TTS})
+                rt.sender_tts_model = model
             if "tts_enabled" in data:
                 if data["tts_enabled"]:
                     _check(rt.sender_tts_model, {Capability.TTS})
