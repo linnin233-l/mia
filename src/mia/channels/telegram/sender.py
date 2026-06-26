@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+
+import httpx
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -179,6 +181,9 @@ class TelegramSenderAgent(BaseAgent):
             else:
                 print(f"\033[31m[TelegramSender]\033[0m ✗ API 返回失败: {result.get('description', 'unknown')}")
                 logger.error("[TelegramSender] API 返回失败: %s", result)
+        except httpx.ConnectError:
+            print(f"\033[33m[TelegramSender]\033[0m Telegram API 不可达 (网络不通)")
+            logger.warning("[TelegramSender] Telegram API 连接失败")
         except Exception as e:
             print(f"\033[31m[TelegramSender]\033[0m ✗ 发送异常: {e}")
             logger.error("[TelegramSender] 发送文字失败: %s", e)
