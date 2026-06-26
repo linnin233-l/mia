@@ -239,13 +239,13 @@ class SessionManager:
     # ─── CRUD ───────────────────────────────────────────
 
     def list_sessions(self) -> list[SessionInfo]:
-        """列出所有会话，按最后活跃时间降序排列
+        """列出所有会话，按创建时间降序排列（位置稳定，不受点击影响）
 
         Returns:
-            会话信息列表（最新的在前）
+            会话信息列表（最新创建的在前）
         """
         sessions = list(self._sessions.values())
-        sessions.sort(key=lambda s: s.updated_at or "", reverse=True)
+        sessions.sort(key=lambda s: s.created_at or "", reverse=True)
         return sessions
 
     def get_session(self, session_id: str) -> Optional[SessionInfo]:
