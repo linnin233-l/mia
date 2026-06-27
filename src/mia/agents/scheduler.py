@@ -257,25 +257,59 @@ class SchedulerAgent(BaseAgent):
             await self.bus.publish(make_send_text(message=reply, session_id=self._session_id, target=target, **meta))
 
     async def _process_task_response(self, msg: Message) -> None:
-        """处理任务返回结果 — 异步模式，仅存储结果不继续循环"""
+        """处理任务返回结果 — 存储 + 主动通知用户"""
         task_id = msg.parent_id or msg.msg_id
         is_error = msg.msg_type == MessageType.TASK_ERROR
+        task_info = self._pending_tasks.get(task_id)
 
         if is_error:
             err = msg.payload.get("error", "")
             logger.warning("[Scheduler] 任务错误: {}", err)
-            if task_id in self._pending_tasks:
-                self._pending_tasks[task_id]["status"] = "failed"
-                self._pending_tasks[task_id]["result"] = f"错误: {err}"
+            if task_info:
+                task_info["status"] = "failed"
+                task_info["result"] = f"错误: {err}"
         else:
             result = msg.payload.get("result", "")
             logger.info("[Scheduler] 任务完成: {}", result[:80])
-            if task_id in self._pending_tasks:
-                self._pending_tasks[task_id]["status"] = "completed"
-                self._pending_tasks[task_id]["result"] = result
-            print(f"\033[32m[Scheduler]\033[0m 后台任务完成: {result[:60]}")
+            if task_info:
+                task_info["status"] = "completed"
+                task_info["result"] = result
 
-        # 不继续循环 — 用户主动查询时才返回结果
+        # 主动推送通知到对应渠道
+        if task_info:
+            sid = task_info.get("session_id", "")
+            desc = task_info.get("desc", "")
+            status = task_info["status"]
+            res = task_info.get("result", "") or ""
+
+            target = self._resolve_output_target_for_session(sid)
+            meta = self._channel_meta_for_session(sid)
+
+            if status == "completed":
+                notify = f"后台任务「{desc[:30]}」已完成:\n{res[:500]}"
+            else:
+                notify = f"后台任务「{desc[:30]}」失败: {res[:200]}"
+
+            print(f"\033[32m[Scheduler]\033[0m 主动推送任务结果: {notify[:60]}")
+
+            if self.enable_streaming:
+                await self.bus.publish(make_stream_start(session_id=sid, target=target, **meta))
+                await self.bus.publish(make_stream_chunk(delta=notify, session_id=sid, target=target, **meta))
+                await self.bus.publish(make_stream_end(full_message=notify, session_id=sid, target=target, **meta))
+            else:
+                await self.bus.publish(make_send_text(message=notify, session_id=sid, target=target, **meta))
+
+    def _resolve_output_target_for_session(self, sid: str) -> str:
+        """根据 session_id 确定输出目标（不依赖 self._session_id）"""
+        if ":" in sid:
+            channel = sid.split(":")[0]
+            if channel == "wechat": return "wechat_sender"
+            if channel == "telegram": return "telegram_sender"
+        return "sender"
+
+    def _channel_meta_for_session(self, sid: str) -> dict:
+        """为指定 session 构建渠道元数据"""
+        return {}  # 后台任务推送不需要 context_token，通过已有 sender 实例发送
 
     async def _run_loop(self, trigger_msg: Message) -> None:
         """
