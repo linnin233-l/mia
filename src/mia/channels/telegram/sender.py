@@ -112,7 +112,7 @@ class TelegramSenderAgent(BaseAgent):
         self._client = TelegramClient(bot_token=self.bot_token)
         await self._client.start()
 
-        print(f"[32m[TelegramSender][0m ✓ 已就绪 (token={self.bot_token[:10]}...)")
+        print(f"[32m[TelegramSender][0m 已就绪 (token={self.bot_token[:10]}...)")
         logger.info("[TelegramSender] Telegram 发送渠道已就绪 ✓")
 
     async def on_stop(self) -> None:
@@ -176,7 +176,7 @@ class TelegramSenderAgent(BaseAgent):
             result = await self._client.send_message(chat_id, text)
             ok = result.get("ok", False)
             if ok:
-                print(f"\033[32m[TelegramSender]\033[0m ✓ 已发送: chat={chat_id} len={len(text)}")
+                print(f"\033[32m[TelegramSender]\033[0m 已发送: chat={chat_id} len={len(text)}")
                 logger.info("[TelegramSender] 已发送文字回复: chat=%s len=%d", chat_id, len(text))
             else:
                 print(f"\033[31m[TelegramSender]\033[0m ✗ API 返回失败: {result.get('description', 'unknown')}")
@@ -250,7 +250,7 @@ class TelegramSenderAgent(BaseAgent):
         if chat_id and full_text and self._stream_msg_id and self._client:
             try:
                 await self._client.edit_message_text(chat_id, self._stream_msg_id, full_text)
-                print(f"\033[32m[TelegramSender]\033[0m ✓ 已发送: chat={chat_id} len={len(full_text)}")
+                print(f"\033[32m[TelegramSender]\033[0m 已发送: chat={chat_id} len={len(full_text)}")
             except Exception as e:
                 logger.error("[TelegramSender] 最终编辑失败: %s，降级为 sendMessage", e)
                 # 编辑失败 → 直接发新消息
