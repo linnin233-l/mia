@@ -167,6 +167,9 @@ class SchedulerAgent(BaseAgent):
         self._task_history: list[str] = []  # 已执行的任务描述
         self._decision_history: list[dict] = []  # 当前会话的历史决策
 
+        # 异步任务追踪 (Scheduler 派发后不等待, 用户可随时查询进度)
+        self._pending_tasks: dict[str, dict] = {}  # task_id → {desc, status, result, session_id, started_at}
+
     # ─── 生命周期 ────────────────────────────────────────
 
     async def on_start(self) -> None:
@@ -190,36 +193,89 @@ class SchedulerAgent(BaseAgent):
     # ─── 核心循环 ────────────────────────────────────────
 
     async def _process_user_intent(self, msg: Message) -> None:
-        """处理用户意图 — 开始新一轮对话循环"""
+        """处理用户意图 — 先检查 pending tasks，再决定是否进入 LLM 循环"""
         self._session_id = msg.session_id
+        intent = msg.payload.get("intent", "")
+
+        # 检查当前 session 是否有未完成的后台任务
+        session_tasks = {k: v for k, v in self._pending_tasks.items() if v.get("session_id") == self._session_id}
+        running_tasks = {k: v for k, v in session_tasks.items() if v["status"] == "running"}
+        completed_tasks = {k: v for k, v in session_tasks.items() if v["status"] in ("completed", "failed")}
+
+        if running_tasks or completed_tasks:
+            # 检测用户是否在询问任务状态
+            ask_keywords = ["查到", "好了吗", "完成了吗", "进度", "结果", "怎么样", "还在查", "任务", "查到了吗", "好了没"]
+            is_asking = any(kw in intent for kw in ask_keywords)
+
+            if is_asking or running_tasks:
+                await self._handle_pending_task_query(msg, running_tasks, completed_tasks)
+                return
+
+        # 清理当前 session 的已完成任务（超过 5 分钟）
+        now = time.time()
+        stale = [k for k, v in self._pending_tasks.items() if v.get("session_id") == self._session_id and v["status"] in ("completed", "failed") and now - v.get("started_at", 0) > 300]
+        for k in stale:
+            del self._pending_tasks[k]
+
         self._iteration = 0
         self._consecutive_tasks = 0
         self._task_history.clear()
         self._decision_history.clear()
 
-        logger.info("[Scheduler] 收到用户意图: {}", msg.payload.get("intent", ""))
-
-        # 打印思考前缀
-        self._print_thought("分析用户意图", msg.payload.get("intent", ""))
-
-        # 进入 LLM 循环
+        logger.info("[Scheduler] 收到用户意图: {}", intent)
+        self._print_thought("分析用户意图", intent)
         await self._run_loop(msg)
 
+    async def _handle_pending_task_query(self, msg, running_tasks, completed_tasks):
+        """响应用户的任务进度查询"""
+        target = self._resolve_output_target()
+        meta = self._channel_meta(msg)
+
+        parts = []
+        if running_tasks:
+            for t in running_tasks.values():
+                elapsed = int(time.time() - t["started_at"])
+                parts.append(f"任务「{t['desc'][:40]}」正在执行中 (已运行 {elapsed}秒)。")
+            if completed_tasks:
+                parts.append("")
+        if completed_tasks:
+            for t in completed_tasks.values():
+                r = t["result"] or "(无结果)"
+                parts.append(f"任务「{t['desc'][:40]}」已完成:\n{r[:500]}")
+            # 清理已完成的任务
+            for tid in list(completed_tasks.keys()):
+                del self._pending_tasks[tid]
+
+        reply = "\n".join(parts) if parts else "没有找到相关任务记录。"
+        self._print_thought("查询任务状态", reply)
+
+        if self.enable_streaming:
+            await self.bus.publish(make_stream_start(session_id=self._session_id, target=target, **meta))
+            await self.bus.publish(make_stream_chunk(delta=reply, session_id=self._session_id, target=target, **meta))
+            await self.bus.publish(make_stream_end(full_message=reply, session_id=self._session_id, target=target, **meta))
+        else:
+            await self.bus.publish(make_send_text(message=reply, session_id=self._session_id, target=target, **meta))
+
     async def _process_task_response(self, msg: Message) -> None:
-        """处理任务返回结果"""
+        """处理任务返回结果 — 异步模式，仅存储结果不继续循环"""
+        task_id = msg.parent_id or msg.msg_id
         is_error = msg.msg_type == MessageType.TASK_ERROR
 
         if is_error:
-            logger.warning("[Scheduler] 收到任务错误: {}", msg.payload.get("error", ""))
-            self._print_thought("收到任务错误", msg.payload.get("error", ""))
+            err = msg.payload.get("error", "")
+            logger.warning("[Scheduler] 任务错误: {}", err)
+            if task_id in self._pending_tasks:
+                self._pending_tasks[task_id]["status"] = "failed"
+                self._pending_tasks[task_id]["result"] = f"错误: {err}"
         else:
             result = msg.payload.get("result", "")
-            logger.info("[Scheduler] 收到任务结果: {}", result)
-            self._print_thought("收到任务结果", result)
+            logger.info("[Scheduler] 任务完成: {}", result[:80])
+            if task_id in self._pending_tasks:
+                self._pending_tasks[task_id]["status"] = "completed"
+                self._pending_tasks[task_id]["result"] = result
+            print(f"\033[32m[Scheduler]\033[0m 后台任务完成: {result[:60]}")
 
-        # 继续 LLM 循环
-        self._iteration += 1
-        await self._run_loop(msg)
+        # 不继续循环 — 用户主动查询时才返回结果
 
     async def _run_loop(self, trigger_msg: Message) -> None:
         """
@@ -429,7 +485,6 @@ class SchedulerAgent(BaseAgent):
             logger.info("[Scheduler] 对话完成, action=reply")
 
         elif action == "execute_task":
-            # 派发任务
             task = detail.get("task", "")
             tools_hint = detail.get("tools_hint", [])
 
@@ -437,15 +492,11 @@ class SchedulerAgent(BaseAgent):
             if task in self._task_history:
                 logger.warning("[Scheduler] 检测到重复任务: {}", task)
                 self._print_thought("检测到重复任务，跳过", f"任务: {task}\n理由: {reasoning}")
-                # 不真正执行，而是模拟一个结果继续循环
                 fake_result = Message(
                     msg_type=MessageType.TASK_RESULT,
                     source="scheduler",
                     target="scheduler",
-                    payload={
-                        "task_id": "duplicate",
-                        "result": "任务与之前重复，已跳过。请基于已有结果做出决策。",
-                    },
+                    payload={"task_id": "duplicate", "result": "任务与之前重复，已跳过。"},
                     session_id=self._session_id,
                 )
                 await self._process_task_response(fake_result)
@@ -454,19 +505,37 @@ class SchedulerAgent(BaseAgent):
             self._task_history.append(task)
             self._consecutive_tasks += 1
 
-            self._print_thought(
-                f"决策: 执行任务 (第{self._consecutive_tasks}次)",
-                f"理由: {reasoning}\n任务: {task}",
-            )
+            self._print_thought(f"决策: 派发任务 ({task[:40]})", f"理由: {reasoning}")
 
+            # ① 派发任务到 TaskAgent（不等待）
             task_msg = make_execute_task(
-                task=task,
-                tools_hint=tools_hint,
-                parent_id=trigger_msg.msg_id,
-                session_id=self._session_id,
+                task=task, tools_hint=tools_hint,
+                parent_id=trigger_msg.msg_id, session_id=self._session_id,
             )
             await self.send(task_msg)
-            # 不继续循环 — 等待 TASK_RESULT 通过 handle() 触发下一轮
+
+            # ② 记录 pending task
+            task_id = task_msg.msg_id
+            self._pending_tasks[task_id] = {
+                "desc": task, "status": "running",
+                "session_id": self._session_id,
+                "started_at": time.time(),
+                "result": None,
+            }
+
+            # ③ 立即回复用户（不等待任务结果）
+            ack_msg = f"好的，我来处理：{task[:50]}"
+            target = self._resolve_output_target()
+            meta = self._channel_meta(trigger_msg)
+            if self.enable_streaming:
+                # 快速流式回复
+                from mia.bus.message import make_stream_start, make_stream_chunk, make_stream_end
+                await self.bus.publish(make_stream_start(session_id=self._session_id, target=target, **meta))
+                await self.bus.publish(make_stream_chunk(delta=ack_msg, session_id=self._session_id, target=target, **meta))
+                await self.bus.publish(make_stream_end(full_message=ack_msg, session_id=self._session_id, target=target, **meta))
+            else:
+                await self.bus.publish(make_send_text(message=ack_msg, session_id=self._session_id, target=target, **meta))
+            print(f"\033[36m[Scheduler]\033[0m 已派发任务: {task[:40]}... (后台执行)")
 
         elif action == "done":
             # 标记完成
