@@ -14,16 +14,16 @@ flowchart LR
 
     RAW --> R[Receiver<br/>多模态理解]
     R -->|USER_INTENT| Mem[MemoryAgent<br/>两级记忆]
-    Mem -->|+memory_context| Sch[Scheduler<br/>LLM 决策+渠道路由]
+    Mem -->|+memory_context| Sch[Scheduler<br/>LLM 决策+渠道路由<br/>异步派发+空闲等待]
     Sch -->|reply| SD[SenderAgent<br/>终端文本/语音]
     Sch -->|reply| WS[WeChatSender<br/>TTS+CDN→微信]
     Sch -->|reply| TS[TelegramSender<br/>TTS+sendAudio→TG]
-    Sch -->|execute_task| TA[TaskAgent<br/>工具调用]
-    TA -->|TASK_RESULT| Sch
+    Sch -->|execute_task<br/>立即回复| TA[TaskAgent<br/>后台工具调用]
+    TA -->|TASK_RESULT<br/>主动推送| Sch
 
     Bus((MessageBus<br/>镜像投递)) -.-> Mem
 ```
-> 9 个 Agent (5核心 + 2微信 + 2纸飞机)，1 条 MessageBus。输入多渠道，输出回原路（渠道感知路由）。
+> 9 个 Agent (5核心 + 2微信 + 2纸飞机)，1 条 MessageBus。Scheduler 派发任务后立即回复用户并保持空闲，TaskAgent 完成后主动推送结果。
 
 ## 特性
 
