@@ -10,24 +10,28 @@
 flowchart LR
     CLI --> RAW[RAW_INPUT]
     WX[微信] --> WR[WeChatReceiver<br/>长轮询+SILK] --> RAW
+    TG[纸飞机] --> TR[TelegramReceiver<br/>长轮询getUpdates] --> RAW
 
     RAW --> R[Receiver<br/>多模态理解]
     R -->|USER_INTENT| Mem[MemoryAgent<br/>两级记忆]
     Mem -->|+memory_context| Sch[Scheduler<br/>LLM 决策+渠道路由]
     Sch -->|reply| SD[SenderAgent<br/>终端文本/语音]
     Sch -->|reply| WS[WeChatSender<br/>TTS+CDN→微信]
+    Sch -->|reply| TS[TelegramSender<br/>TTS+sendAudio→TG]
     Sch -->|execute_task| TA[TaskAgent<br/>工具调用]
     TA -->|TASK_RESULT| Sch
 
     Bus((MessageBus<br/>镜像投递)) -.-> Mem
 ```
-> 7 个 Agent，1 条 MessageBus。输入多渠道，输出回原路（渠道感知路由）。
+> 9 个 Agent (5核心 + 2微信 + 2纸飞机)，1 条 MessageBus。输入多渠道，输出回原路（渠道感知路由）。
 
 ## 特性
 
 - **LLM 决策循环** — Scheduler 不断分析状态 → 派发任务 → 观察结果 → 决定回复，而非一次性生成
 - **两级知识记忆** — 临时记忆 (Level 1) + 持久知识 (Level 2)，从对话中自动提炼知识点，支持跨轮关联
-- **微信通信渠道** — 接入微信个人号 (iLink Bot API)，支持文字/语音/图片消息，SILK→WAV 解码 + TTS→CDN 语音发送
+- **微信通信渠道** — 接入微信个人号 (iLink Bot API)，支持文字/语音/图片消息，SILK→WAV 解码 + TTS→CDN 语音发送，QR 码扫码登录
+- **Telegram 通信渠道** — 接入 Telegram Bot API，支持文字/语音消息，editMessageText 伪流式输出，sendChatAction typing 动画
+- **Web 管理面板** — Vue 3 + Element Plus 前端，顶栏+侧边栏布局，会话管理/记忆浏览/模型配置/渠道开关/QR 扫码
 - **渠道路由** — session_id 编码来源，回复自动原路返回 (微信⇢微信, CLI⇢终端)，互不干扰
 - **总线记忆镜像** — MessageBus 自动镜像投递给 MemoryAgent，不依赖显式 CONVERSATION_DONE
 - **对话历史注入** — 每轮自动将最近 N 轮对话原文注入 LLM 上下文，解决指代和连续对话问题
@@ -79,8 +83,11 @@ MIA_MEMORY_EXTRACTION_TIMEOUT=8.0 # 知识提取超时秒数
 # 交互模式 (推荐)
 python -m mia
 
-# 交互模式 + 微信渠道
-python -m mia --wechat
+# HTTP API 服务器
+python -m mia --server --port 8080
+
+# Web 前端
+cd mia-web && npm install && npm run dev
 
 # 单次查询
 python -m mia --query "你好，我叫linnin"
@@ -101,6 +108,11 @@ pytest
 | 命令 | 说明 |
 |------|------|
 | 直接输入文本 | 开始一轮对话 |
+| `/model` | TUI 模型平台配置 (API Key + 模型开关) |
+| `/agent` | TUI Agent 模型分配 + 功能开关 |
+| `/channel` | TUI 渠道开关 (微信/Telegram) |
+| `/interface` | TUI 消息接口管理 (查看Token/扫码/删除) |
+| `/session` | TUI 会话管理 (列表/切换/新建/重命名/删除) |
 | `/memory` | 打开 TUI 知识浏览器 (临时记忆 + 持久知识) |
 | `/compact` | 压缩对话历史为知识摘要 |
 | `/verbose` | 切换详细日志 |
@@ -122,11 +134,15 @@ mia/
 │   │   ├── task.py       # 工具调用
 │   │   └── sender.py     # 终端输出 (文本/流式/语音)
 │   ├── channels/         # 通信渠道 (可选, 收发分离)
-│   │   └── wechat/
-│   │       ├── receiver.py # WeChatReceiverAgent (入站长轮询+SILK解码)
-│   │       ├── sender.py   # WeChatSenderAgent (出站TTS+CDN发送)
-│   │       ├── client.py   # ILinkClient (iLink HTTP API)
-│   │       └── utils.py    # AES-128-ECB 加解密 + 请求头
+│   │   ├── wechat/
+│   │   │   ├── receiver.py # WeChatReceiverAgent (入站长轮询+SILK解码)
+│   │   │   ├── sender.py   # WeChatSenderAgent (出站TTS+CDN发送)
+│   │   │   ├── client.py   # ILinkClient (iLink HTTP API)
+│   │   │   └── utils.py    # AES-128-ECB 加解密 + 请求头
+│   │   └── telegram/
+│   │       ├── receiver.py # TelegramReceiverAgent (长轮询getUpdates)
+│   │       ├── sender.py   # TelegramSenderAgent (sendMessage+editMessageText)
+│   │       └── client.py   # TelegramClient (Bot API)
 │   ├── audio/            # 音频子系统
 │   │   ├── recorder.py   # 麦克风录音
 │   │   └── playback.py   # 本地音频播放
@@ -139,6 +155,11 @@ mia/
 │   ├── tools/            # 工具实现 (天气/搜索/Shell/文件)
 │   ├── config.py         # 配置管理 (pydantic-settings)
 │   └── main.py           # 入口: CLI 交互 + HTTP 服务
+├── mia-web/              # Vue 3 + Element Plus Web 前端
+│   ├── src/views/        # ChatView / SessionsView / MemoryView / SettingsView
+│   ├── src/components/   # 聊天/配置/布局 组件
+│   ├── src/stores/       # Pinia 状态管理
+│   └── src/api/          # Axios API 封装
 ├── tests/                # 测试 (11 个)
 ├── workspace/            # TaskAgent 工作目录
 └── pyproject.toml
