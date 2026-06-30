@@ -105,6 +105,7 @@ async def run_agent_pipeline(
     image_path: Optional[str] = None,
     voice_path: Optional[str] = None,
     timeout: float = 180.0,
+    session_id: str = "",
 ) -> Optional[str]:
     """
     运行完整的 Agent 链路
@@ -121,7 +122,7 @@ async def run_agent_pipeline(
     # ─── 1. 创建 MessageBus ───────────────────────────
     config = get_config()
     rt = config.runtime
-    session_id = uuid.uuid4().hex[:12]
+    session_id = session_id or uuid.uuid4().hex[:12]
     _t0 = time.time()
     _trace = []
     bus = MessageBus(max_queue_size=100)
@@ -1170,7 +1171,8 @@ def _build_api_app(config, rt, session_manager, bus, memory_agent):
         import time as _time
         run_agent_pipeline._sm = session_manager  # 注入 session_manager
         _t0 = _time.time()
-        result = await run_agent_pipeline(query=q, image_path=request.get("image"), voice_path=request.get("voice"))
+        sid = request.get("session_id", "")
+        result = await run_agent_pipeline(query=q, image_path=request.get("image"), voice_path=request.get("voice"), session_id=sid)
         _total = round((_time.time() - _t0) * 1000)
         # 从 loguru 日志构建基础 trace (基于已知 pipeline 顺序估算)
         trace = [
@@ -1193,7 +1195,7 @@ def _build_api_app(config, rt, session_manager, bus, memory_agent):
         if not q: return JSONResponse(status_code=400, content={"error":"query empty"})
         async def gen():
             run_agent_pipeline._sm = session_manager
-            result = await run_agent_pipeline(query=q, image_path=request.get("image"), voice_path=request.get("voice"))
+            result = await run_agent_pipeline(query=q, image_path=request.get("image"), voice_path=request.get("voice"), session_id=request.get("session_id", ""))
             if result: yield f"data: {json.dumps({'text':result,'done':True})}\n\n"
             else: yield f"data: {json.dumps({'error':'timeout','done':True})}\n\n"
         return StreamingResponse(gen(), media_type="text/event-stream")

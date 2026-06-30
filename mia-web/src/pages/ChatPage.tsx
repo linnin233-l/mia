@@ -20,7 +20,7 @@ export default function ChatPage() {
     setText('')
     setLoading(true)
     try {
-      const res = await sendMessage(text)
+      const res = await sendMessage(text, currentId)
       setMessages((prev: any[]) => [...prev, { role: 'assistant', content: res.response, trace: res.trace || [] }])
     } catch (e: any) {
       setMessages((prev: any[]) => [...prev, { role: 'assistant', content: 'Error: ' + (e?.message || 'failed'), trace: [] }])
