@@ -283,8 +283,9 @@ class MemoryAgent(BaseAgent):
     def _build_session_state(self):
         """从当前内存字段构建 SessionState（用于保存）"""
         from mia.session.manager import SessionState
+        sid = self._session_manager.get_current_session_id() if self._session_manager else ""
         return SessionState(
-            session_id=self._pending_session_id or "",
+            session_id=sid or self._pending_session_id or "",
             conversation_history=list(self._conversation_history),
             working_memory=[e.to_dict() for e in self._working_memory],
             daily_buffer=list(self._daily_buffer),
@@ -606,13 +607,13 @@ class MemoryAgent(BaseAgent):
             print(f"\033[34m[MemoryAgent]\033[0m 临时记忆达上限 ({len(self._working_memory)}/{self.MAX_WORKING_ENTRIES})，触发 L2 合并")
             await self._consolidate_daily()
 
-        # ─── 4. 清理暂存 ───────────────────────────
+        # ─── 4. 自动保存会话状态 ────────────────────
+        await self.save_state()
+
+        # ─── 5. 清理暂存 ───────────────────────────
         self._pending_intent = None
         self._pending_session_id = None
         self._pending_original = None
-
-        # ─── 5. 自动保存会话状态 ────────────────────
-        await self.save_state()
 
         # ─── 6. AI 自动命名会话 ─────────────────────
         await self._auto_name_session()
