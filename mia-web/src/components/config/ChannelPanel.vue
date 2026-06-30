@@ -2,7 +2,7 @@
   <div>
     <h3>渠道配置</h3>
     <div v-if="loading" style="color: #909399; padding: 20px">加载中...</div>
-    <div v-else style="display: flex; flex-direction: column; gap: 16px; max-width: 660px">
+    <div v-else style="display: flex; flex-direction: column; gap: 16px">
       <el-card v-for="ch in channelList" :key="ch.key">
         <template #header>
           <div style="display: flex; justify-content: space-between; align-items: center">

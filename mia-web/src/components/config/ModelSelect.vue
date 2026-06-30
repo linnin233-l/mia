@@ -2,7 +2,7 @@
   <el-select
     :model-value="modelValue"
     size="small"
-    style="width: 190px"
+    style="max-width: 220px; flex: 1"
     :clearable="clearable"
     @change="(v: any) => $emit('change', v)"
   >

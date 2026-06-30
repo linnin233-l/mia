@@ -6,7 +6,7 @@
         v-model="selectedSession"
         placeholder="选择会话"
         size="small"
-        style="width: 220px"
+        style="min-width: 180px; max-width: 300px; flex: 1"
         @change="switchSession"
       >
         <el-option
@@ -30,7 +30,7 @@
       </el-menu>
     </el-header>
     <el-container>
-      <el-aside width="220px" style="background: #f5f7fa; border-right: 1px solid #e4e7ed; padding: 16px">
+      <el-aside style="width: 16%; min-width: 180px; max-width: 280px; background: #f5f7fa; border-right: 1px solid #e4e7ed; padding: 16px">
         <AppSidebar />
       </el-aside>
       <el-main style="padding: 0; background: #fff">
