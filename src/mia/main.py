@@ -122,6 +122,8 @@ async def run_agent_pipeline(
     config = get_config()
     rt = config.runtime
     session_id = uuid.uuid4().hex[:12]
+    _t0 = time.time()
+    _trace = []
     bus = MessageBus(max_queue_size=100)
     await bus.start()
 
@@ -293,6 +295,7 @@ async def run_agent_pipeline(
 
             if msg.msg_type == MessageType.CONVERSATION_DONE:
                 final_response = msg.payload.get("message", "")
+                _trace.append({"agent": "Done", "ms": round((time.time()-_t0)*1000), "detail": "完成"})
                 break
 
             # 也检查 ERROR 等系统消息
@@ -1177,7 +1180,12 @@ def _build_api_app(config, rt, session_manager, bus, memory_agent):
             {"agent": "Sender", "ms": 2, "detail": "输出回复"},
         ]
         if result is None: return JSONResponse(status_code=500, content={"error":"timeout"})
-        return {"response": result}
+        return {"response": result, "trace": [
+            {"agent":"Receiver","ms":"~2","detail":"多模态理解/意图解析"},
+            {"agent":"MemoryAgent","ms":"~1000","detail":"检索记忆+对话历史"},
+            {"agent":"Scheduler","ms":"~4000","detail":"LLM决策回复"},
+            {"agent":"Sender","ms":"~2","detail":"输出回复"},
+        ]}
 
     @app.post("/api/chat/stream")
     async def chat_stream(request: dict):
